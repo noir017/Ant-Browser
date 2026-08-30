@@ -1,0 +1,87 @@
+name: Test
+
+on:
+  # Runs when this branch is pushed. Note: workflow_dispatch only appears in
+  # the Actions UI once this file also exists on the default branch (master),
+  # which is intentional — the branch stays independent of the release
+  # workflows (publish-linux/publish-macos) on master.
+  push:
+    branches:
+      - ci/tests
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test Ant Browser
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # Linux compilation of the Wails v2 app requires CGO and system GUI
+      # development headers (GTK3, WebKit2GTK, Ayatana AppIndicator).
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            libayatana-appindicator3-dev \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            patchelf \
+            pkg-config
+
+      # main.go embeds frontend/dist via `//go:embed all:frontend/dist`, so the
+      # frontend must be built before any Go compilation can succeed. `npm run
+      # build` also runs `tsc` for TypeScript type checking.
+      - name: Build frontend and type check
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Go build
+        run: go build ./...
+
+      - name: Go vet
+        run: go vet ./...
+
+      # -count=1 disables the test cache so results reflect this exact commit.
+      - name: Go test
+        run: go test ./... -count=1 -v
+
+      - name: Summary
+        if: always()
+        run: |
+          commit_sha="$(git rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
+          {
+            echo "### Test Results"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Commit | \`${commit_sha}\` |"
+            echo "| Status | ${{ job.status == 'success' && '✅ All tests passed successfully' || '❌ Test suite failed' }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
