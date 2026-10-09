@@ -1,10 +1,9 @@
 ﻿import { useState } from 'react'
 import { toast } from '../../../shared/components'
-import type { BrowserProfile, BrowserProfileCopyOptions, BrowserProxy } from '../types'
+import type { BrowserProfile, BrowserProfileCopyOptions, BrowserProfilePackageImportAction, BrowserProfilePackageImportPreview, BrowserProxy } from '../types'
 import { BrowserCoreEditorModal, BrowserListHeader, BrowserListSettingsModal } from '../components/BrowserListLayout'
 import { BatchToolbar } from '../components/BrowserListWidgets'
 import { BrowserProfilesPanel } from '../components/BrowserProfilesPanel'
-import { BrowserBackupModal } from '../components/BrowserBackupModal'
 import { ProxyPickerModal } from '../components/ProxyPickerModal'
 import { ProfileExtensionModal } from '../components/ProfileExtensionModal'
 import { createBrowserProfileCopyOptions, isBrowserProfileCopyOptionsValid } from '../copyOptions'
@@ -21,18 +20,15 @@ import {
   deleteBrowserProfile,
   exportBrowserProfilePackage,
   fetchBrowserProfileTrash,
-  importBrowserProfilePackage,
+  importBrowserProfilePackageWithOptions,
+  prepareBrowserProfilePackageImport,
   permanentlyDeleteBrowserProfile,
   restoreBrowserProfile,
   startBrowserInstance,
   stopBrowserInstance,
   updateBrowserProfile,
   openUserDataDir,
-  exportFullBrowserBackup,
-  importFullBrowserBackup,
 } from '../api'
-
-type BackupLoadingMode = 'none' | 'export' | 'import-merge' | 'import-reset'
 
 const directProxyID = '__direct__'
 
@@ -49,8 +45,7 @@ export function BrowserListPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [batchLoading, setBatchLoading] = useState(false)
   const [profilePackageBusy, setProfilePackageBusy] = useState(false)
-  const [backupModalOpen, setBackupModalOpen] = useState(false)
-  const [backupLoadingMode, setBackupLoadingMode] = useState<BackupLoadingMode>('none')
+  const [profileImportPreview, setProfileImportPreview] = useState<BrowserProfilePackageImportPreview | null>(null)
   const [deleteConfirm, setDeleteConfirm] = useState<{
     open: boolean
     mode: 'single' | 'batch'
@@ -197,18 +192,32 @@ export function BrowserListPage() {
     const ids = Array.from(selectedIds)
     if (ids.length === 0) return
     setBatchLoading(true)
-    let success = 0, pending = 0, failed = 0
+    let success = 0, pending = 0, failed = 0, skipped = 0
     const pendingMessages: string[] = []
     const failureMessages: string[] = []
     for (const id of ids) {
       const profile = profiles.find(p => p.profileId === id)
-      if (!profile || profile.running) continue
+      if (!profile || profile.running) {
+        skipped++
+        continue
+      }
       updatePendingIds(setStartingIds, id, true)
       try {
         await warmupProfileProxyBeforeStart(profile)
         const startedProfile = await startBrowserInstance(id)
         mergeProfileState(startedProfile)
-        success++
+        if (!startedProfile?.running) {
+          failed++
+          failureMessages.push(`${profile.profileName}：实例未进入运行状态。`)
+        } else if (!startedProfile.debugReady) {
+          pending++
+          pendingMessages.push(`${profile.profileName}：${startedProfile.runtimeWarning || '浏览器已打开，正在后台接管。'}`)
+        } else if (startedProfile.debugPort <= 0) {
+          failed++
+          failureMessages.push(`${profile.profileName}：调试端口无效，实例不可操作。`)
+        } else {
+          success++
+        }
       } catch (error: any) {
         const feedback = resolveActionFeedback(error, '实例启动失败')
         if (feedback.pendingAttach) {
@@ -226,7 +235,16 @@ export function BrowserListPage() {
     const summary = [`成功 ${success}`]
     if (pending > 0) summary.push(`待接管 ${pending}`)
     if (failed > 0) summary.push(`失败 ${failed}`)
-    toast.success(`批量启动完成：${summary.join('，')}`)
+    if (skipped > 0) summary.push(`跳过 ${skipped}`)
+    if (failed > 0 && success === 0 && pending === 0) {
+      toast.error(`批量启动失败：${summary.join('，')}`)
+    } else if (failed > 0 || pending > 0 || skipped > 0) {
+      toast.warning(`批量启动结果：${summary.join('，')}`)
+    } else if (success > 0) {
+      toast.success(`批量启动完成：${summary.join('，')}`)
+    } else {
+      toast.info(`没有可启动的实例${skipped > 0 ? `，跳过 ${skipped}` : ''}`)
+    }
     if (pendingMessages.length > 0) {
       const preview = pendingMessages.slice(0, 3)
       const more = pendingMessages.length > preview.length ? `\n另有 ${pendingMessages.length - preview.length} 个实例已打开窗口，仍在后台接管。` : ''
@@ -244,15 +262,22 @@ export function BrowserListPage() {
     const ids = Array.from(selectedIds)
     if (ids.length === 0) return
     setBatchLoading(true)
-    let success = 0, failed = 0
+    let success = 0, failed = 0, skipped = 0
     for (const id of ids) {
       const profile = profiles.find(p => p.profileId === id)
-      if (!profile || !profile.running) continue
+      if (!profile || !profile.running) {
+        skipped++
+        continue
+      }
       updatePendingIds(setStoppingIds, id, true)
       try {
         const stoppedProfile = await stopBrowserInstance(id)
         mergeProfileState(stoppedProfile)
-        success++
+        if (stoppedProfile && !stoppedProfile.running) {
+          success++
+        } else {
+          failed++
+        }
       } catch {
         failed++
       } finally {
@@ -260,7 +285,18 @@ export function BrowserListPage() {
       }
     }
     setBatchLoading(false)
-    toast.success(`批量停止完成：成功 ${success}${failed > 0 ? `，失败 ${failed}` : ''}`)
+    const summary = [`成功 ${success}`]
+    if (failed > 0) summary.push(`失败 ${failed}`)
+    if (skipped > 0) summary.push(`跳过 ${skipped}`)
+    if (failed > 0 && success === 0) {
+      toast.error(`批量停止失败：${summary.join('，')}`)
+    } else if (failed > 0 || skipped > 0) {
+      toast.warning(`批量停止结果：${summary.join('，')}`)
+    } else if (success > 0) {
+      toast.success(`批量停止完成：${summary.join('，')}`)
+    } else {
+      toast.info(`没有可停止的实例${skipped > 0 ? `，跳过 ${skipped}` : ''}`)
+    }
     loadProfiles()
   }
 
@@ -319,17 +355,25 @@ export function BrowserListPage() {
     }
   }
 
-  const handleImportProfiles = async () => {
-    if (profilePackageBusy) return
-    setProfilePackageBusy(true)
+  const executeProfileImport = async (zipPath: string, actions: BrowserProfilePackageImportAction[], confirmConflict = false) => {
+    if (!zipPath.trim()) {
+      setProfileImportPreview(null)
+      setProfilePackageBusy(false)
+      return
+    }
+    setProfileImportPreview(null)
     try {
-      const result = await importBrowserProfilePackage()
+      const result = await importBrowserProfilePackageWithOptions(zipPath, 'new', confirmConflict, actions)
       if (result.cancelled) return
       const warnings = result.warnings || []
+      const createdCount = result.createdCount ?? Math.max(0, result.importedCount - (result.overwrittenCount || 0))
+      const overwrittenCount = result.overwrittenCount ?? 0
+      const renamedCount = result.renamedCount ?? 0
+      const summary = `已处理：新建 ${createdCount} 个，覆盖 ${overwrittenCount} 个，重命名 ${renamedCount} 个`
       if (warnings.length > 0) {
-        toast.warning(`已导入 ${result.importedCount} 个实例，${warnings.length} 条提示：${warnings[0]}`)
+        toast.warning(`${summary}，${warnings.length} 条提示：${warnings[0]}`)
       } else {
-        toast.success(`已导入 ${result.importedCount} 个实例`)
+        toast.success(summary)
       }
       setSelectedIds(new Set())
       await loadProfiles()
@@ -340,38 +384,20 @@ export function BrowserListPage() {
     }
   }
 
-  const handleExportFullBackup = async () => {
-    if (backupLoadingMode !== 'none') return
-    if (runningCount > 0) {
-      toast.warning(`建议先停止 ${runningCount} 个运行中实例后再备份`)
-    }
-    setBackupLoadingMode('export')
+  const handleImportProfiles = async () => {
+    if (profilePackageBusy) return
+    setProfilePackageBusy(true)
     try {
-      const result = await exportFullBrowserBackup()
-      if (result.cancelled) return
-      toast.success(result.zipPath ? `备份已导出：${result.zipPath}` : (result.message || '备份已导出'))
+      const preview = await prepareBrowserProfilePackageImport()
+      if (preview.cancelled) {
+        setProfilePackageBusy(false)
+        return
+      }
+      setProfileImportPreview(preview)
+      return
     } catch (error: any) {
-      toast.error(error?.message || '全量备份失败')
-    } finally {
-      setBackupLoadingMode('none')
-    }
-  }
-
-  const handleImportFullBackup = async (resetFirst: boolean) => {
-    if (backupLoadingMode !== 'none') return
-    const mode: BackupLoadingMode = resetFirst ? 'import-reset' : 'import-merge'
-    setBackupLoadingMode(mode)
-    try {
-      const result = await importFullBrowserBackup(resetFirst)
-      if (result.cancelled) return
-      toast.success(result.message || (resetFirst ? '备份已恢复' : '备份已合并'))
-      setSelectedIds(new Set())
-      setBackupModalOpen(false)
-      await loadProfiles()
-    } catch (error: any) {
-      toast.error(error?.message || '导入备份失败')
-    } finally {
-      setBackupLoadingMode('none')
+      toast.error(error?.message || '导入实例失败')
+      setProfilePackageBusy(false)
     }
   }
 
@@ -519,7 +545,7 @@ export function BrowserListPage() {
 
 
   return (
-    <div className="overflow-auto p-5 space-y-5 animate-fade-in h-full">
+    <div className="min-h-full space-y-3 animate-fade-in">
       <BrowserListHeader
         profileCount={profiles.length}
         filteredProfileCount={filteredProfiles.length}
@@ -537,7 +563,6 @@ export function BrowserListPage() {
         onOpenSettings={handleOpenSettings}
         onOpenTrash={openTrashModal}
         onImportProfiles={handleImportProfiles}
-        onOpenBackup={() => setBackupModalOpen(true)}
         importingProfiles={profilePackageBusy}
         onViewModeChange={setViewMode}
       />
@@ -551,23 +576,9 @@ export function BrowserListPage() {
         onBatchStart={handleBatchStart}
         onBatchStop={handleBatchStop}
         onBatchExport={handleBatchExport}
-        onOpenBackup={() => setBackupModalOpen(true)}
         onBatchDelete={openBatchDeleteConfirm}
         batchLoading={batchLoading}
         exporting={profilePackageBusy}
-      />
-
-      <BrowserBackupModal
-        open={backupModalOpen}
-        runningCount={runningCount}
-        selectedCount={selectedIds.size}
-        selectedExporting={profilePackageBusy}
-        loadingMode={backupLoadingMode}
-        onClose={() => setBackupModalOpen(false)}
-        onExportSelected={() => { void handleBatchExport() }}
-        onExportFull={() => { void handleExportFullBackup() }}
-        onImportMerge={() => { void handleImportFullBackup(false) }}
-        onImportReset={() => { void handleImportFullBackup(true) }}
       />
 
       <BrowserProfilesPanel
@@ -701,6 +712,17 @@ export function BrowserListPage() {
         onConfirmPermanentDelete={() => { void handleConfirmPermanentDelete() }}
         opError={opError}
         onCloseOpError={() => setOpError('')}
+        profileImportPreview={profileImportPreview}
+        profileImportBusy={profilePackageBusy}
+        onCloseProfileImport={() => {
+          setProfileImportPreview(null)
+          setProfilePackageBusy(false)
+        }}
+        onConfirmProfileImport={(actions) => {
+          if (profileImportPreview) {
+            void executeProfileImport(profileImportPreview.zipPath, actions, true)
+          }
+        }}
       />
     </div>
   )

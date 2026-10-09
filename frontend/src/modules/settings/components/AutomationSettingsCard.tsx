@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { HelpCircle } from 'lucide-react'
+import { HelpCircle, Save } from 'lucide-react'
 
 import { Badge, Button, Card, FormItem, Input, Progress, Select, Switch } from '../../../shared/components'
 
@@ -257,7 +257,7 @@ export function AutomationSettingsCard({
         </div>
       )}
     >
-      <div className="space-y-5">
+      <div className="space-y-4">
         <div className="flex items-start justify-between gap-4">
           <div>
             <div className="flex items-center gap-2 flex-wrap">
@@ -324,11 +324,13 @@ export function AutomationSettingsCard({
           <div className="flex flex-wrap items-center gap-2">
             <Button
               size="sm"
-              variant="secondary"
+              variant="primary"
+              className="min-w-[88px]"
               onClick={onSaveLaunchServerPort}
               loading={launchServerSaving}
             >
-              保存端口
+              <Save className="h-3.5 w-3.5" />
+              保存
             </Button>
             <span className="text-xs text-[var(--color-text-muted)]">
               {launchServerReady ? launchServerBaseUrl : '服务未就绪'}

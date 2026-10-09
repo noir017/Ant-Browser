@@ -11,7 +11,7 @@ interface SettingsCardsProps {
 export function SettingsBasicFeatureCards({ settings, onChange }: SettingsCardsProps) {
   return (
     <>
-      <Card title="基础设置" subtitle="应用的基本信息配置">
+      <Card title="基础设置">
         <div className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <FormItem label="应用名称" required>
@@ -31,12 +31,12 @@ export function SettingsBasicFeatureCards({ settings, onChange }: SettingsCardsP
         </div>
       </Card>
 
-      <Card title="功能设置" subtitle="启用或禁用特定功能">
-        <div className="space-y-5">
+      <Card title="功能设置">
+        <div className="space-y-4">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium text-[var(--color-text-primary)]">启用通知</p>
-              <p className="text-xs text-[var(--color-text-muted)] mt-0.5">接收系统通知和提醒</p>
+              <p className="text-sm font-medium text-[var(--color-text-primary)]">保存通知历史</p>
+              <p className="text-xs text-[var(--color-text-muted)] mt-0.5">仅控制是否写入通知中心，不影响即时提示</p>
             </div>
             <Switch checked={settings.enableNotifications} onChange={v => onChange('enableNotifications', v)} />
           </div>
@@ -78,7 +78,7 @@ export function SettingsBasicFeatureCards({ settings, onChange }: SettingsCardsP
 
 export function SettingsAdvancedCard({ settings, onChange }: SettingsCardsProps) {
   return (
-    <Card title="高级设置" subtitle="高级配置选项">
+    <Card title="高级设置">
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         <FormItem label="最大上传大小（MB）">
           <Input type="number" value={settings.maxUploadSize} onChange={e => onChange('maxUploadSize', parseInt(e.target.value) || 10)} min={1} max={100} />

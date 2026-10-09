@@ -1,8 +1,8 @@
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { BrowserRouter as Router } from "react-router-dom";
 import { ThemeProvider } from "./shared/theme";
 import { Layout } from "./shared/layout";
-import { ToastContainer, Modal, Button, Loading, toast } from "./shared/components";
+import { MODAL_EXIT_DURATION_MS, ToastContainer, Modal, Button, Loading, toast } from "./shared/components";
 import { AlertCircle } from "lucide-react";
 import { AppRoutes } from "./routes/AppRoutes";
 import { lazyNamed } from "./routes/lazyNamed";
@@ -35,10 +35,21 @@ function useWailsNotifications() {
     const offCrashed = runtime.EventsOn(
       "browser:instance:crashed",
       (data: { profileId: string; profileName: string; error: string }) => {
+        const action = data.profileId
+          ? {
+              type: "navigate" as const,
+              label: "查看实例",
+              path: `/browser/detail/${encodeURIComponent(data.profileId)}`,
+            }
+          : undefined;
         addNotification({
           type: "error",
           title: "实例异常退出",
           message: `「${data.profileName || data.profileId}」意外崩溃：${data.error}`,
+          source: "runtime",
+          dedupeKey: `browser:instance:crashed:${data.profileId}`,
+          persistent: true,
+          action,
         });
       },
     );
@@ -46,12 +57,20 @@ function useWailsNotifications() {
     const offBridgeFailed = runtime.EventsOn(
       "proxy:bridge:failed",
       (data: { profileId: string; profileName: string; error: string }) => {
-        addNotification({
-          type: "warning",
+        const action = data.profileId
+          ? {
+              type: "navigate" as const,
+              label: "查看实例",
+              path: `/browser/detail/${encodeURIComponent(data.profileId)}`,
+            }
+          : undefined;
+        toast.warning(`「${data.profileName || data.profileId}」代理桥接失败，已直连启动`, 8_000, {
           title: "代理已降级直连",
-          message: `「${data.profileName || data.profileId}」${data.error}`,
+          source: "runtime",
+          dedupeKey: `proxy:bridge:failed:${data.profileId}`,
+          persistent: true,
+          action,
         });
-        toast.warning(`「${data.profileName || data.profileId}」代理桥接失败，已直连启动`, 6000);
       },
     );
 
@@ -62,6 +81,14 @@ function useWailsNotifications() {
           type: "warning",
           title: "连接池节点失效",
           message: `代理节点 ${data.key} 连接中断，相关实例可能无法访问网络`,
+          source: "runtime",
+          dedupeKey: `proxy:bridge:died:${data.key}`,
+          persistent: true,
+          action: {
+            type: "navigate",
+            label: "查看代理池",
+            path: "/browser/proxy-pool",
+          },
         });
       },
     );
@@ -89,18 +116,26 @@ function useGlobalErrorNotifications() {
     };
 
     const handleError = (event: ErrorEvent) => {
+      const message = event.message || toMessage(event.error) || "未知脚本错误";
       addNotification({
         type: "error",
         title: "前端异常",
-        message: event.message || toMessage(event.error) || "未知脚本错误",
+        message,
+        source: "frontend",
+        dedupeKey: `frontend:error:${message.slice(0, 160)}`,
+        persistent: true,
       });
     };
 
     const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
+      const message = toMessage(event.reason) || "未知 Promise 异常";
       addNotification({
         type: "error",
         title: "未处理异步异常",
-        message: toMessage(event.reason) || "未知 Promise 异常",
+        message,
+        source: "frontend",
+        dedupeKey: `frontend:rejection:${message.slice(0, 160)}`,
+        persistent: true,
       });
     };
 
@@ -119,11 +154,18 @@ function CloseConfirmModal() {
   const [quittingAction, setQuittingAction] = useState<
     "app-only" | "app-and-browser" | null
   >(null);
+  const closeActionTimerRef = useRef<number | null>(null);
   const importInProgress = useBackupStore((s) => s.importInProgress);
   const importProgress = useBackupStore((s) => s.importProgress);
   const importMessage = useBackupStore((s) => s.importMessage);
   const supportsTray = platform === "windows";
   const quitting = quittingAction !== null;
+
+  useEffect(() => () => {
+    if (closeActionTimerRef.current !== null) {
+      window.clearTimeout(closeActionTimerRef.current);
+    }
+  }, []);
 
   useEffect(() => {
     const runtime = (window as any).runtime;
@@ -159,37 +201,52 @@ function CloseConfirmModal() {
     setOpen(false);
   };
 
+  const closeAfterAnimation = (action: () => void | Promise<void>) => {
+    if (closeActionTimerRef.current !== null) return;
+
+    setOpen(false);
+    closeActionTimerRef.current = window.setTimeout(() => {
+      closeActionTimerRef.current = null;
+      void action();
+    }, MODAL_EXIT_DURATION_MS);
+  };
+
   const handleMinimize = () => {
     if (quitting) return;
-    setOpen(false);
-    if (supportsTray) {
-      WindowHide();
-      return;
-    }
-    WindowMinimise();
+    closeAfterAnimation(() => {
+      if (supportsTray) {
+        WindowHide();
+        return;
+      }
+      WindowMinimise();
+    });
   };
 
-  const handleQuitAppOnly = async () => {
+  const handleQuitAppOnly = () => {
     setQuittingAction("app-only");
-    try {
-      await QuitAppOnlyApp();
-    } catch (error) {
-      console.error("QuitAppOnly failed", error);
-      setQuittingAction(null);
-    }
+    closeAfterAnimation(async () => {
+      try {
+        await QuitAppOnlyApp();
+      } catch (error) {
+        console.error("QuitAppOnly failed", error);
+        setQuittingAction(null);
+      }
+    });
   };
 
-  const handleQuitAppAndBrowsers = async () => {
+  const handleQuitAppAndBrowsers = () => {
     setQuittingAction("app-and-browser");
-    try {
-      await Promise.race([
-        ForceQuitApp(),
-        new Promise((resolve) => setTimeout(resolve, 1200)),
-      ]);
-    } catch (error) {
-      console.error("ForceQuit failed, falling back to runtime.Quit()", error);
-    }
-    Quit();
+    closeAfterAnimation(async () => {
+      try {
+        await Promise.race([
+          ForceQuitApp(),
+          new Promise((resolve) => setTimeout(resolve, 1200)),
+        ]);
+      } catch (error) {
+        console.error("ForceQuit failed, falling back to runtime.Quit()", error);
+      }
+      Quit();
+    });
   };
 
   return (
@@ -212,15 +269,15 @@ function CloseConfirmModal() {
         </div>
         {importInProgress && (
           <h3 className="text-lg font-medium text-[var(--color-text-primary)] mb-2">
-            正在加载中，是否关闭？
+            正在导入备份，是否关闭？
           </h3>
         )}
         {importInProgress ? (
           <p className="text-sm text-[var(--color-text-secondary)] text-center mb-6">
-            当前正在加载配置
+            当前正在导入备份
             {importProgress > 0 ? `（${importProgress}%）` : ""}。
             <br />
-            {importMessage || "强制关闭会中断本次加载，是否仍要关闭应用？"}
+            {importMessage || "强制关闭会中断本次导入，是否仍要关闭应用？"}
           </p>
         ) : (
           <p className="mb-6 text-sm text-center text-[var(--color-text-secondary)]">

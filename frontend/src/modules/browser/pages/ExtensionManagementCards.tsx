@@ -1,4 +1,4 @@
-import { Download, ExternalLink, FolderOpen, History, Power, Puzzle, RefreshCw, RotateCw, Search, Settings, Trash2, Users } from 'lucide-react'
+import { AlertCircle, CheckCircle2, Download, ExternalLink, FolderOpen, History, Power, Puzzle, RefreshCw, RotateCw, Search, Settings, Trash2, Users } from 'lucide-react'
 import { Badge, Button, Card, Input } from '../../../shared/components'
 import type { BrowserExtension, BrowserExtensionLookupResult, BrowserProxy } from '../types'
 import { extensionStoreURL, formatExtensionSource, formatExtensionTime, getExtensionManifestMeta, getProxySpeedState } from './extensionManagementUtils'
@@ -46,35 +46,37 @@ export function ExtensionManagementHeader({
   onRefresh,
 }: ExtensionManagementHeaderProps) {
   return (
-    <div className="flex items-center justify-between gap-3">
-      <h1 className="text-xl font-semibold text-[var(--color-text-primary)]">插件包管理</h1>
-      <div className="flex gap-2">
-        <Button size="sm" variant="secondary" onClick={onOpenProxy}>
-          <Settings className="h-4 w-4" />
-          {proxyButtonText}
-        </Button>
-        <Button size="sm" variant="secondary" onClick={onOpenHistory}>
-          <History className="h-4 w-4" />
-          历史
-        </Button>
-        <Button size="sm" variant="secondary" onClick={onImportFile} loading={importing === 'file'}>
-          <Download className="h-4 w-4" />
-          导入包
-        </Button>
-        <Button size="sm" variant="secondary" onClick={onImportDirectory} loading={importing === 'directory'}>
-          <Download className="h-4 w-4" />
-          导入目录
-        </Button>
-        <Button size="sm" variant="secondary" onClick={onOpenDownloadDirectory} loading={downloadDirectoryLoading}>
-          <FolderOpen className="h-4 w-4" />
-          下载目录安装
-        </Button>
-        <Button size="sm" variant="secondary" onClick={onRefresh} loading={loading}>
-          <RefreshCw className="h-4 w-4" />
-          刷新
-        </Button>
+    <Card padding="none" className="shadow-[var(--shadow-sm)]">
+      <div className="flex flex-col gap-3 px-4 py-3 md:flex-row md:items-center md:justify-between">
+        <h1 className="text-xl font-semibold text-[var(--color-text-primary)]">插件包管理</h1>
+        <div className="flex flex-wrap gap-2 md:justify-end">
+          <Button size="sm" variant="secondary" onClick={onOpenProxy}>
+            <Settings className="h-4 w-4" />
+            {proxyButtonText}
+          </Button>
+          <Button size="sm" variant="secondary" onClick={onOpenHistory}>
+            <History className="h-4 w-4" />
+            历史
+          </Button>
+          <Button size="sm" variant="secondary" onClick={onImportFile} loading={importing === 'file'}>
+            <Download className="h-4 w-4" />
+            导入包
+          </Button>
+          <Button size="sm" variant="secondary" onClick={onImportDirectory} loading={importing === 'directory'}>
+            <Download className="h-4 w-4" />
+            导入目录
+          </Button>
+          <Button size="sm" variant="secondary" onClick={onOpenDownloadDirectory} loading={downloadDirectoryLoading}>
+            <FolderOpen className="h-4 w-4" />
+            下载目录安装
+          </Button>
+          <Button size="sm" variant="secondary" onClick={onRefresh} loading={loading}>
+            <RefreshCw className="h-4 w-4" />
+            刷新
+          </Button>
+        </div>
       </div>
-    </div>
+    </Card>
   )
 }
 
@@ -111,6 +113,8 @@ export function ExtensionInstallCard({
   onOpenProxy,
   onInstall,
 }: ExtensionInstallCardProps) {
+  const lookupSucceeded = lookup?.installable === true
+
   return (
     <Card>
       <div className="flex flex-col gap-3 md:flex-row">
@@ -145,34 +149,71 @@ export function ExtensionInstallCard({
       </div>
 
       {lookup ? (
-        <div className="mt-3 flex flex-col gap-3 rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-muted)] p-3 md:flex-row md:items-center md:justify-between">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2 font-medium text-[var(--color-text-primary)]">
-              <span>{lookup.name || lookup.extensionId}</span>
-              {lookup.version ? <span className="text-xs font-normal text-[var(--color-text-muted)]">v{lookup.version}</span> : null}
+        <div className="mt-3 rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-subtle)] p-4">
+          <div className="flex items-start gap-3">
+            <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${lookupSucceeded ? 'bg-[var(--color-success)]/15 text-[var(--color-success)]' : 'bg-[var(--color-error)]/15 text-[var(--color-error)]'}`}>
+              {lookupSucceeded ? <CheckCircle2 className="h-5 w-5" /> : <AlertCircle className="h-5 w-5" />}
             </div>
-            <div className="mt-1 break-all font-mono text-xs text-[var(--color-text-muted)]">{lookup.extensionId}</div>
-            {lastLookupProxyLabel ? <div className="mt-1 text-xs text-[var(--color-text-muted)]">本次查询：{lastLookupProxyLabel}</div> : null}
-            {lookup.description ? <div className="mt-1 line-clamp-2 text-xs text-[var(--color-text-muted)]">{lookup.description}</div> : null}
-            {lookup.message ? <div className="mt-1 text-xs text-[var(--color-text-muted)]">{lookup.message}</div> : null}
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm font-semibold text-[var(--color-text-primary)]">
+                  {lookupSucceeded ? (lookup.name || '已找到插件') : '无法获取可安装信息'}
+                </span>
+                <Badge variant={lookupSucceeded ? 'success' : 'error'} size="sm" dot>
+                  {lookupSucceeded ? '可安装' : '查询失败'}
+                </Badge>
+                {lookup.version ? <span className="text-xs text-[var(--color-text-muted)]">版本 {lookup.version}</span> : null}
+              </div>
+              <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--color-text-muted)]">
+                <span className="min-w-0 break-all">
+                  <span className="mr-1 text-[var(--color-text-secondary)]">插件 ID</span>
+                  <span className="font-mono">{lookup.extensionId || '未识别'}</span>
+                </span>
+                {lastLookupProxyLabel ? <span>查询方式：{lastLookupProxyLabel}</span> : null}
+              </div>
+            </div>
           </div>
-          <div className="flex shrink-0 gap-2">
+
+          {lookup.description ? (
+            <div className="mt-4 border-t border-[var(--color-border-muted)] pt-3">
+              <div className="text-xs font-medium text-[var(--color-text-secondary)]">插件简介</div>
+              <div className="mt-1 line-clamp-2 text-sm leading-5 text-[var(--color-text-muted)]">{lookup.description}</div>
+            </div>
+          ) : null}
+
+          {lookup.message ? (
+            <div className={`mt-4 rounded-lg border px-3 py-2.5 ${lookupSucceeded ? 'border-[var(--color-border-default)] bg-[var(--color-bg-muted)]' : 'border-[var(--color-error)]/25 bg-[var(--color-error)]/10'}`}>
+              <div className={`text-xs font-medium ${lookupSucceeded ? 'text-[var(--color-text-secondary)]' : 'text-[var(--color-error)]'}`}>
+                {lookupSucceeded ? '查询提示' : '失败原因'}
+              </div>
+              <div className="mt-1 break-all text-xs leading-5 text-[var(--color-text-secondary)]">{lookup.message}</div>
+            </div>
+          ) : null}
+
+          <div className="mt-4 flex flex-wrap justify-end gap-2 border-t border-[var(--color-border-muted)] pt-3">
             {lookup.storeUrl ? (
               <Button type="button" size="sm" variant="secondary" onClick={() => window.open(lookup.storeUrl, '_blank')}>
                 <ExternalLink className="h-4 w-4" />
-                商店页
+                打开商店页
               </Button>
             ) : null}
-            <Button
-              type="button"
-              size="sm"
-              onClick={onInstall}
-              loading={installing}
-              disabled={!lookup.installable || installedIds.has(lookup.extensionId)}
-            >
-              <Download className="h-4 w-4" />
-              {installedIds.has(lookup.extensionId) ? '已安装' : '安装'}
-            </Button>
+            {lookupSucceeded ? (
+              <Button
+                type="button"
+                size="sm"
+                onClick={onInstall}
+                loading={installing}
+                disabled={installedIds.has(lookup.extensionId)}
+              >
+                <Download className="h-4 w-4" />
+                {installedIds.has(lookup.extensionId) ? '已安装' : '安装插件'}
+              </Button>
+            ) : (
+              <Button type="button" size="sm" onClick={onLookup} loading={querying}>
+                <RefreshCw className="h-4 w-4" />
+                重新查询
+              </Button>
+            )}
             <Button type="button" size="sm" variant="secondary" onClick={onOpenManualInstall}>
               手动安装
             </Button>
@@ -186,15 +227,16 @@ export function ExtensionInstallCard({
 export interface InstalledExtensionsListProps {
   items: BrowserExtension[]
   busyId: string
-  busyAction: 'toggle' | 'delete' | ''
+  busyAction: 'toggle' | 'delete' | 'default' | ''
   updatingId: string
   onRestrictProfiles: (item: BrowserExtension) => void
+  onDefaultInstallToggle: (item: BrowserExtension) => void
   onUpdate: (item: BrowserExtension) => void
   onToggle: (item: BrowserExtension) => void
   onDelete: (item: BrowserExtension) => void
 }
 
-export function InstalledExtensionsList({ items, busyId, busyAction, updatingId, onRestrictProfiles, onUpdate, onToggle, onDelete }: InstalledExtensionsListProps) {
+export function InstalledExtensionsList({ items, busyId, busyAction, updatingId, onRestrictProfiles, onDefaultInstallToggle, onUpdate, onToggle, onDelete }: InstalledExtensionsListProps) {
   return (
     <Card>
       <div className="mb-3 flex items-center justify-between">
@@ -209,6 +251,7 @@ export function InstalledExtensionsList({ items, busyId, busyAction, updatingId,
             busyAction={busyId === item.extensionId ? busyAction : ''}
             updating={updatingId === item.extensionId}
             onRestrictProfiles={onRestrictProfiles}
+            onDefaultInstallToggle={onDefaultInstallToggle}
             onUpdate={onUpdate}
             onToggle={onToggle}
             onDelete={onDelete}
@@ -228,15 +271,16 @@ export function InstalledExtensionsList({ items, busyId, busyAction, updatingId,
 export interface InstalledExtensionCardProps {
   item: BrowserExtension
   busy: boolean
-  busyAction: 'toggle' | 'delete' | ''
+  busyAction: 'toggle' | 'delete' | 'default' | ''
   updating: boolean
   onRestrictProfiles: (item: BrowserExtension) => void
+  onDefaultInstallToggle: (item: BrowserExtension) => void
   onUpdate: (item: BrowserExtension) => void
   onToggle: (item: BrowserExtension) => void
   onDelete: (item: BrowserExtension) => void
 }
 
-export function InstalledExtensionCard({ item, busy, busyAction, updating, onRestrictProfiles, onUpdate, onToggle, onDelete }: InstalledExtensionCardProps) {
+export function InstalledExtensionCard({ item, busy, busyAction, updating, onRestrictProfiles, onDefaultInstallToggle, onUpdate, onToggle, onDelete }: InstalledExtensionCardProps) {
   const meta = getExtensionManifestMeta(item)
   const storeUrl = extensionStoreURL(item)
   const actionButtonClass = 'min-w-[72px] will-change-transform hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.98]'
@@ -259,6 +303,16 @@ export function InstalledExtensionCard({ item, busy, busyAction, updating, onRes
               </Badge>
               {item.version ? <span className="text-xs text-[var(--color-text-muted)]">v{item.version}</span> : null}
               {meta.manifestVersion ? <span className="text-xs text-[var(--color-text-muted)]">MV{meta.manifestVersion}</span> : null}
+              <label className="flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)]">
+                <input
+                  type="checkbox"
+                  checked={item.defaultInstall}
+                  disabled={busy}
+                  onChange={() => onDefaultInstallToggle(item)}
+                  className="h-3.5 w-3.5 rounded accent-[var(--color-accent)]"
+                />
+                默认安装
+              </label>
             </div>
             {item.description ? <div className="mt-1 line-clamp-2 text-sm text-[var(--color-text-secondary)]">{item.description}</div> : null}
             <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--color-text-muted)]">
@@ -286,7 +340,7 @@ export function InstalledExtensionCard({ item, busy, busyAction, updating, onRes
           ) : null}
           <Button type="button" size="sm" variant="secondary" onClick={() => onRestrictProfiles(item)} className="min-w-[96px] will-change-transform hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.98]">
             <Users className="h-4 w-4" />
-            限制实例
+            设置实例
           </Button>
           <Button type="button" size="sm" variant="secondary" onClick={() => onUpdate(item)} disabled={updating} className={actionButtonClass}>
             <RotateCw className={`h-4 w-4 ${updating ? 'animate-spin' : ''}`} />

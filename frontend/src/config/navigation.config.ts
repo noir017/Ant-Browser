@@ -26,8 +26,10 @@ export const navigationConfig: NavSection[] = [
     title: '系统维护',
     items: [
       { name: '系统设置', path: '/settings', icon: 'Settings' },
+      { name: '备份与恢复', path: '/system/backup', icon: 'Archive' },
       { name: '文档中心', path: '/system/docs', icon: 'BookOpen' },
       { name: '日志查看', path: '/browser/logs', icon: 'FileText' },
+      { name: '通知', path: '/notifications', icon: 'Bell' },
     ]
   },
 ]

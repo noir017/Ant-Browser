@@ -104,36 +104,40 @@ type LaunchCallRecord struct {
 
 // LaunchServer 本地 HTTP 唤起服务
 type LaunchServer struct {
-	service    *LaunchCodeService
-	starter    BrowserStarter
-	browserMgr *browser.Manager
-	port       int
-	server     *http.Server
-	mu         sync.Mutex
-	authMu     sync.RWMutex
-	logMu      sync.Mutex
-	callLogs   []LaunchCallRecord
-	activeMu   sync.RWMutex
-	activePort int
-	activeID   string
-	activeName string
-	apiAuth    APIAuthConfig
-	mcpMu      sync.RWMutex
-	mcpHandler http.Handler
-	mcpPath    string
-	proxyMu    sync.RWMutex
-	proxy      ProxyProvider
-	pageMu     sync.RWMutex
-	page       PageDriver
+	service     *LaunchCodeService
+	starter     BrowserStarter
+	browserMgr  *browser.Manager
+	port        int
+	server      *http.Server
+	mu          sync.Mutex
+	authMu      sync.RWMutex
+	logMu       sync.Mutex
+	callLogs    []LaunchCallRecord
+	taskMu      sync.Mutex
+	activeTasks map[string]*launchTaskState
+	nextTaskID  uint64
+	activeMu    sync.RWMutex
+	activePort  int
+	activeID    string
+	activeName  string
+	apiAuth     APIAuthConfig
+	mcpMu       sync.RWMutex
+	mcpHandler  http.Handler
+	mcpPath     string
+	proxyMu     sync.RWMutex
+	proxy       ProxyProvider
+	pageMu      sync.RWMutex
+	page        PageDriver
 }
 
 // NewLaunchServer 创建 LaunchServer
 func NewLaunchServer(service *LaunchCodeService, starter BrowserStarter, mgr *browser.Manager, port int) *LaunchServer {
 	srv := &LaunchServer{
-		service:    service,
-		starter:    starter,
-		browserMgr: mgr,
-		port:       port,
+		service:     service,
+		starter:     starter,
+		browserMgr:  mgr,
+		port:        port,
+		activeTasks: make(map[string]*launchTaskState),
 	}
 	srv.SetAPIAuthConfig(APIAuthConfig{})
 	return srv
@@ -159,9 +163,9 @@ func (s *LaunchServer) Start() error {
 
 	log := logger.New("LaunchServer")
 	if preferredPort <= 0 {
-		log.Info("LaunchServer 使用随机端口", logger.F("port", port))
+		log.Debug("LaunchServer 使用随机端口", logger.F("port", port))
 	} else {
-		log.Info("LaunchServer 使用固定端口", logger.F("port", port))
+		log.Debug("LaunchServer 使用固定端口", logger.F("port", port))
 	}
 	auth := s.apiAuthConfig()
 	if auth.Active() {

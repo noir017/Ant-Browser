@@ -10,10 +10,9 @@ import (
 var defaultBrowserStartURLs = []string{}
 
 const (
-	// BrowserConnectorXray 是历史 default_connector_type 的默认值。
-	// 新代理运行入口不再依赖全局连接栈，而是按单个代理自动解析 xray/sing-box/mihomo。
+	// BrowserConnectorXray 表示 Xray + sing-box 组合连接栈。
 	BrowserConnectorXray = "xray"
-	// BrowserConnectorMihomo 仅保留用于兼容旧配置、旧 API 和历史数据。
+	// BrowserConnectorMihomo 表示独立 Mihomo 连接栈。
 	BrowserConnectorMihomo = "mihomo"
 )
 
@@ -45,8 +44,7 @@ func KnownCoreBackends() []string {
 	return []string{CoreBackendFingerprintChromium, CoreBackendCloak}
 }
 
-// NormalizeBrowserConnectorType 只用于兼容历史 default_connector_type 输入。
-// 新代理执行入口应使用 proxy.ResolveProxyKernel 按单个代理选择内核。
+// NormalizeBrowserConnectorType 规范化连接栈配置。
 func NormalizeBrowserConnectorType(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case BrowserConnectorMihomo, "clash", "clash-meta":
@@ -203,6 +201,34 @@ func normalizeConfig(config *Config) {
 		config.MCP.Path = normalizeMCPPath(config.MCP.Path)
 	}
 
+	if strings.TrimSpace(config.Backup.Channels.OpenList.BaseURL) != "" {
+		config.Backup.Channels.OpenList.BaseURL = strings.TrimSpace(config.Backup.Channels.OpenList.BaseURL)
+	}
+	if strings.TrimSpace(config.Backup.Channels.OpenList.RemotePath) == "" {
+		config.Backup.Channels.OpenList.RemotePath = defaultConfig.Backup.Channels.OpenList.RemotePath
+	} else {
+		config.Backup.Channels.OpenList.RemotePath = strings.TrimSpace(config.Backup.Channels.OpenList.RemotePath)
+	}
+	config.Backup.Channels.OpenList.Token = strings.TrimSpace(config.Backup.Channels.OpenList.Token)
+	if config.Backup.Channels.OpenList.UploadRateLimitMBps < 0 {
+		config.Backup.Channels.OpenList.UploadRateLimitMBps = defaultConfig.Backup.Channels.OpenList.UploadRateLimitMBps
+	}
+	config.Backup.Channels.S3.Endpoint = strings.TrimSpace(config.Backup.Channels.S3.Endpoint)
+	config.Backup.Channels.S3.Region = strings.TrimSpace(config.Backup.Channels.S3.Region)
+	if config.Backup.Channels.S3.Region == "" {
+		config.Backup.Channels.S3.Region = defaultConfig.Backup.Channels.S3.Region
+	}
+	config.Backup.Channels.S3.Bucket = strings.TrimSpace(config.Backup.Channels.S3.Bucket)
+	config.Backup.Channels.S3.Prefix = strings.TrimSpace(config.Backup.Channels.S3.Prefix)
+	config.Backup.Channels.S3.AccessKeyID = strings.TrimSpace(config.Backup.Channels.S3.AccessKeyID)
+	config.Backup.Channels.S3.SecretAccessKey = strings.TrimSpace(config.Backup.Channels.S3.SecretAccessKey)
+	config.Backup.Channels.S3.SessionToken = strings.TrimSpace(config.Backup.Channels.S3.SessionToken)
+	if strings.TrimSpace(config.Backup.Schedule.DailyTime) == "" {
+		config.Backup.Schedule.DailyTime = defaultConfig.Backup.Schedule.DailyTime
+	} else {
+		config.Backup.Schedule.DailyTime = strings.TrimSpace(config.Backup.Schedule.DailyTime)
+	}
+
 	automationUnset := !config.Automation.Enabled &&
 		!config.Automation.HeadlessDefault &&
 		!config.Automation.KeepRuntimeOnDisable &&
@@ -355,6 +381,20 @@ func DefaultConfig() *Config {
 			NodeVersion:           DefaultAutomationNodeVersion,
 			PlaywrightCoreVersion: DefaultAutomationPWVersion,
 			PageSessionIdleMs:     DefaultAutomationPageSessionIdleMs,
+		},
+		Backup: BackupConfig{
+			Channels: BackupChannelsConfig{
+				OpenList: OpenListChannelConfig{
+					RemotePath: "ant-chrome/backups",
+				},
+				S3: S3ChannelConfig{
+					Region: "us-east-1",
+				},
+			},
+			Schedule: BackupScheduleConfig{
+				Enabled:   false,
+				DailyTime: "02:00",
+			},
 		},
 	}
 }

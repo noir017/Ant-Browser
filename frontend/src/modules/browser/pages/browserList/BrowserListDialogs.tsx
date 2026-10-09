@@ -3,7 +3,8 @@ import { XCircle } from 'lucide-react'
 import { Button, Modal } from '../../../../shared/components'
 import { BrowserProfileCopyForm } from '../../components/BrowserProfileCopyForm'
 import { KeywordsModal } from '../../components/KeywordsModal'
-import type { BrowserProfile, BrowserProfileCopyOptions } from '../../types'
+import { ProfilePackageConflictModal } from '../../../backup/components/ProfilePackageConflictModal'
+import type { BrowserProfile, BrowserProfileCopyOptions, BrowserProfilePackageImportAction, BrowserProfilePackageImportPreview } from '../../types'
 
 interface BrowserListDialogsProps {
   proxyErrorModal: boolean
@@ -41,6 +42,10 @@ interface BrowserListDialogsProps {
   onConfirmPermanentDelete: () => void
   opError: string
   onCloseOpError: () => void
+  profileImportPreview: BrowserProfilePackageImportPreview | null
+  profileImportBusy: boolean
+  onCloseProfileImport: () => void
+  onConfirmProfileImport: (actions: BrowserProfilePackageImportAction[]) => void
 }
 
 export function BrowserListDialogs({
@@ -79,6 +84,10 @@ export function BrowserListDialogs({
   onConfirmPermanentDelete,
   opError,
   onCloseOpError,
+  profileImportPreview,
+  profileImportBusy,
+  onCloseProfileImport,
+  onConfirmProfileImport,
 }: BrowserListDialogsProps) {
   const formatTime = (value?: string) => {
     if (!value) return '-'
@@ -253,6 +262,13 @@ export function BrowserListDialogs({
           <p className="text-red-500">这会删除配置、浏览器用户数据、快照、快捷码和插件绑定，删除后不可恢复。</p>
         </div>
       </Modal>
+
+      <ProfilePackageConflictModal
+        preview={profileImportPreview}
+        busy={profileImportBusy}
+        onClose={onCloseProfileImport}
+        onConfirm={onConfirmProfileImport}
+      />
 
       <Modal
         open={!!opError}

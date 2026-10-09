@@ -62,15 +62,61 @@ export function AutomationScriptRunWithOptions(arg1:automation.ScriptRunRequest)
 
 export function AutomationScriptSave(arg1:automation.ScriptRecord):Promise<automation.ScriptRecord>;
 
+export function BackupCreatePackage(arg1:Record<string, string>):Promise<Record<string, any>>;
+
 export function BackupExportPackage():Promise<Record<string, any>>;
+
+export function BackupGetLocalSettings():Promise<backend.BackupLocalSettings>;
 
 export function BackupGetManifestTemplate():Promise<backup.Manifest>;
 
 export function BackupGetScopeDefinition():Promise<backup.Scope>;
 
-export function BackupImportPackage(arg1:boolean):Promise<Record<string, any>>;
+export function BackupImportPackage():Promise<Record<string, any>>;
 
-export function BackupInitializeSystem():Promise<Record<string, any>>;
+export function BackupListLocalBackups(arg1:string):Promise<Array<backend.BackupLocalHistoryItem>>;
+
+export function BackupOpenListDownload(arg1:Record<string, string>,arg2:string):Promise<Record<string, any>>;
+
+export function BackupOpenListGetSettings():Promise<Record<string, any>>;
+
+export function BackupOpenListList(arg1:Record<string, string>):Promise<Array<Record<string, any>>>;
+
+export function BackupOpenListRestore(arg1:Record<string, string>,arg2:string):Promise<Record<string, any>>;
+
+export function BackupOpenListRevealToken():Promise<string>;
+
+export function BackupOpenListSaveSettings(arg1:Record<string, string>):Promise<Record<string, any>>;
+
+export function BackupOpenListTest(arg1:Record<string, string>):Promise<Record<string, any>>;
+
+export function BackupOpenListUpload(arg1:Record<string, string>):Promise<Record<string, any>>;
+
+export function BackupRestoreLocalPackage(arg1:string):Promise<Record<string, any>>;
+
+export function BackupS3Download(arg1:Record<string, string>,arg2:string):Promise<Record<string, any>>;
+
+export function BackupS3GetSettings():Promise<Record<string, any>>;
+
+export function BackupS3List(arg1:Record<string, string>):Promise<Array<Record<string, any>>>;
+
+export function BackupS3Restore(arg1:Record<string, string>,arg2:string):Promise<Record<string, any>>;
+
+export function BackupS3RevealCredential(arg1:string):Promise<string>;
+
+export function BackupS3SaveSettings(arg1:Record<string, string>):Promise<Record<string, any>>;
+
+export function BackupS3Test(arg1:Record<string, string>):Promise<Record<string, any>>;
+
+export function BackupS3Upload(arg1:Record<string, string>):Promise<Record<string, any>>;
+
+export function BackupSaveLocalDirectory(arg1:string):Promise<backend.BackupLocalSettings>;
+
+export function BackupScheduledGetSettings():Promise<Record<string, any>>;
+
+export function BackupScheduledSaveSettings(arg1:Record<string, string>):Promise<Record<string, any>>;
+
+export function BackupSelectLocalDirectory():Promise<backend.BackupSelectLocalDirectoryResult>;
 
 export function BookmarkList():Promise<Array<config.BrowserBookmark>>;
 
@@ -134,6 +180,8 @@ export function BrowserExtensionManualInstallGuide(arg1:string):Promise<backend.
 
 export function BrowserExtensionOpenManualDownloadDir():Promise<void>;
 
+export function BrowserExtensionSetDefaultInstall(arg1:string,arg2:boolean):Promise<browser.Extension>;
+
 export function BrowserExtensionSetEnabled(arg1:string,arg2:boolean):Promise<browser.Extension>;
 
 export function BrowserGetAllTags():Promise<Array<string>>;
@@ -191,6 +239,12 @@ export function BrowserProfileListByTag(arg1:string):Promise<Array<browser.Profi
 export function BrowserProfilePackageExport(arg1:Array<string>):Promise<backend.ProfilePackageExportResult>;
 
 export function BrowserProfilePackageImport():Promise<backend.ProfilePackageImportResult>;
+
+export function BrowserProfilePackageImportWithOptions(arg1:string,arg2:backend.ProfilePackageImportOptions):Promise<backend.ProfilePackageImportResult>;
+
+export function BrowserProfilePackagePrepareImport():Promise<backend.ProfilePackageImportPreview>;
+
+export function BrowserProfilePackagePrepareImportFromPath(arg1:string):Promise<backend.ProfilePackageImportPreview>;
 
 export function BrowserProfilePermanentlyDelete(arg1:string):Promise<void>;
 
@@ -274,6 +328,8 @@ export function GetAppLogs():Promise<Array<logger.MemoryLogEntry>>;
 
 export function GetAutomationState():Promise<Record<string, any>>;
 
+export function GetBackupFileInfo(arg1:string):Promise<Record<string, any>>;
+
 export function GetBrowserSettings():Promise<browser.Settings>;
 
 export function GetDashboardStats():Promise<Record<string, any>>;
@@ -298,6 +354,8 @@ export function ListGroups():Promise<Array<browser.GroupWithCount>>;
 
 export function MoveInstancesToGroup(arg1:Array<string>,arg2:string):Promise<void>;
 
+export function OpenBackupPath(arg1:string):Promise<void>;
+
 export function OpenCorePath(arg1:string):Promise<void>;
 
 export function OpenProjectRoot():Promise<void>;
@@ -309,6 +367,8 @@ export function OpenUserDataRoot():Promise<void>;
 export function QuitAppOnly():Promise<void>;
 
 export function ReloadConfig():Promise<void>;
+
+export function ResetManagedSettings():Promise<void>;
 
 export function SaveAutomationRuntimeSettings(arg1:string,arg2:string):Promise<Record<string, any>>;
 

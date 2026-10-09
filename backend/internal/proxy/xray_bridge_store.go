@@ -7,6 +7,19 @@ import (
 	"time"
 )
 
+func (m *XrayManager) discardBridge(key string, bridge *XrayBridge) {
+	if bridge == nil {
+		return
+	}
+	m.mu.Lock()
+	bridge.Stopping = true
+	if current, ok := m.Bridges[key]; ok && current == bridge {
+		delete(m.Bridges, key)
+	}
+	m.mu.Unlock()
+	m.stopBridgeProcess(bridge)
+}
+
 func (m *XrayManager) tryReuseBridge(key string, pin bool) (string, bool) {
 	var stale *XrayBridge
 
@@ -110,7 +123,7 @@ func (m *XrayManager) watchBridge(bridge *XrayBridge, key string) {
 
 	if shouldRestart {
 		log := logger.New("Xray")
-		if err := m.restartPinnedBridge(log, key, bridge, refCount); err == nil {
+		if err := m.restartPinnedBridge(log, key, bridge); err == nil {
 			return
 		} else if errors.Is(err, errXrayBridgeRestartNotNeeded) {
 			return

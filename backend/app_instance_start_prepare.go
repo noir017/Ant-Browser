@@ -22,17 +22,18 @@ type browserStartInput struct {
 }
 
 type browserStartPlan struct {
-	profile              *BrowserProfile
-	chromeBinaryPath     string
-	processEnv           []string
-	userDataDir          string
-	args                 []string
-	extensionDirs        []string
+	profile          *BrowserProfile
+	chromeBinaryPath string
+	processEnv       []string
+	userDataDir      string
+	args             []string
+
 	deferredStartTargets []string
 	deferredStartNewTabs bool
 	effectiveProxy       string
 	acquiredProxyBridge  profileProxyBridgeRef
 	releaseProxyBridge   bool
+	extensionWarning     string
 	assignedDebugPort    int
 	startReadyTimeout    time.Duration
 	startStableWindow    time.Duration
@@ -140,7 +141,6 @@ func (a *App) prepareBrowserStartPlan(input browserStartInput, profile *BrowserP
 	maxStartAttempts := browserStartAttemptCount()
 	totalReadyTimeout := time.Duration(maxStartAttempts) * startReadyTimeout
 	restoreLastSession := profileRestoreLastSession(profile, a.config)
-	extensionDirs := a.browserMgr.EnabledExtensionDirsForProfile(input.ProfileID)
 	fingerprintExpectedArgs := combineFingerprintExpectedArgs(fingerprintLaunchArgs, sanitizedProfileLaunchArgs, sanitizedExtraLaunchArgs)
 	defaultStartURLs := a.resolveFingerprintCheckStartURLsForExpectedArgsAndProfile(profile.ProfileId, fingerprintExpectedArgs, profile, mergeStartURLs(browserDefaultStartURLs(a.config), bookmarkStartURLs(bookmarks)))
 	startURLs := a.resolveFingerprintCheckStartURLsForExpectedArgsAndProfile(profile.ProfileId, fingerprintExpectedArgs, profile, input.StartURLs)
@@ -154,6 +154,9 @@ func (a *App) prepareBrowserStartPlan(input browserStartInput, profile *BrowserP
 
 	assignedDebugPort, err := nextAvailablePort()
 	if err != nil {
+		if releaseProxyBridge {
+			a.releaseProxyBridgeRef(acquiredProxyBridge)
+		}
 		startErr := fmt.Errorf("实例启动失败：本地调试端口分配失败。原因：%v。请关闭占用端口的程序后重试。", err)
 		logger.New("Browser").Error("调试端口分配失败",
 			logger.F("profile_id", input.ProfileID),
@@ -166,24 +169,50 @@ func (a *App) prepareBrowserStartPlan(input browserStartInput, profile *BrowserP
 
 	resolvedCore, _ := a.browserMgr.ResolveProfileCore(profile)
 
+	instanceArgs := buildBrowserLaunchArgs(userDataDir, assignedDebugPort, effectiveProxy, fingerprintLaunchArgs, sanitizedProfileLaunchArgs, sanitizedExtraLaunchArgs, launchTargets, restoreLastSession)
+	// 插件持久安装助手进程复用实例的调试端口与代理/指纹参数：
+	// 若此时实例浏览器尚未运行，安装助手进程就是实例浏览器本身，
+	// 缺少调试端口会导致后续正式启动被 Chrome 单实例交接、误报“就绪前退出”。
+	extensionInstallArgs := buildBrowserLaunchArgs(userDataDir, assignedDebugPort, effectiveProxy, fingerprintLaunchArgs, sanitizedProfileLaunchArgs, sanitizedExtraLaunchArgs, nil, restoreLastSession)
+	_, extensionWarnings := a.browserMgr.PrepareProfileExtensions(profile, chromeBinaryPath, userDataDir, extensionInstallArgs)
+	extensionWarning := joinBrowserStartExtensionWarnings(extensionWarnings)
+
 	return &browserStartPlan{
 		profile:              profile,
 		chromeBinaryPath:     chromeBinaryPath,
 		processEnv:           buildBrowserProcessEnv(resolvedCore, input.ProfileID),
 		userDataDir:          userDataDir,
-		extensionDirs:        extensionDirs,
-		args:                 buildBrowserLaunchArgs(userDataDir, assignedDebugPort, effectiveProxy, extensionDirs, fingerprintLaunchArgs, sanitizedProfileLaunchArgs, sanitizedExtraLaunchArgs, launchTargets, restoreLastSession),
+		args:                 instanceArgs,
 		deferredStartTargets: deferredStartTargets,
 		deferredStartNewTabs: deferredStartNewTabs,
 		effectiveProxy:       effectiveProxy,
 		acquiredProxyBridge:  acquiredProxyBridge,
 		releaseProxyBridge:   releaseProxyBridge,
+		extensionWarning:     extensionWarning,
 		assignedDebugPort:    assignedDebugPort,
 		startReadyTimeout:    startReadyTimeout,
 		startStableWindow:    startStableWindow,
 		maxStartAttempts:     maxStartAttempts,
 		totalReadyTimeout:    totalReadyTimeout,
 	}, nil
+}
+
+func joinBrowserStartExtensionWarnings(warnings []error) string {
+	if len(warnings) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(warnings))
+	for _, warning := range warnings {
+		if warning == nil {
+			continue
+		}
+		parts = append(parts, strings.TrimSpace(warning.Error()))
+	}
+	joined := strings.Join(parts, "；")
+	if len(joined) > 500 {
+		joined = joined[:500] + "…"
+	}
+	return joined
 }
 
 func (a *App) fingerprintCheckExpectedArgsForRunningProfile(profile *BrowserProfile, _ []string) []string {
@@ -269,6 +298,22 @@ func (a *App) prepareBrowserLaunchContext(input browserStartInput, profile *Brow
 		return nil, nil, nil, "", "", errBrowserStartHandledByRecoveredRuntime
 	}
 
+	// 同一用户数据目录存在无法通过调试端口接管的残留浏览器进程时
+	// （例如旧版本插件安装助手抢占成为实例进程，或状态丢失后的残留），
+	// 后续启动会被 Chrome 单实例机制交接而误报“就绪前退出”，启动前清理。
+	if terminated, terminateErr := terminateBrowserUserDataOrphans(userDataDir, 5*time.Second); terminateErr != nil {
+		log.Warn("清理无调试端口的残留浏览器进程失败",
+			logger.F("profile_id", input.ProfileID),
+			logger.F("user_data_dir", userDataDir),
+			logger.F("error", terminateErr.Error()),
+		)
+	} else if terminated {
+		log.Warn("检测到无调试端口的残留浏览器进程，已结束并重新启动实例",
+			logger.F("profile_id", input.ProfileID),
+			logger.F("user_data_dir", userDataDir),
+		)
+	}
+
 	if !profileRestoreLastSession(profile, a.config) {
 		if err := clearBrowserSessionRestoreData(userDataDir); err != nil {
 			if terminated, terminateErr := terminateBrowserProcessesByUserDataDir(userDataDir, 5*time.Second); terminateErr == nil && terminated {
@@ -304,7 +349,7 @@ func (a *App) prepareBrowserLaunchContext(input browserStartInput, profile *Brow
 	return sanitizedProfileLaunchArgs, sanitizedExtraLaunchArgs, fingerprintLaunchArgs, chromeBinaryPath, userDataDir, nil
 }
 
-func buildBrowserLaunchArgs(userDataDir string, debugPort int, effectiveProxy string, extensionDirs []string, fingerprintLaunchArgs []string, sanitizedProfileLaunchArgs []string, sanitizedExtraLaunchArgs []string, launchTargets []string, restoreLastSession bool) []string {
+func buildBrowserLaunchArgs(userDataDir string, debugPort int, effectiveProxy string, fingerprintLaunchArgs []string, sanitizedProfileLaunchArgs []string, sanitizedExtraLaunchArgs []string, launchTargets []string, restoreLastSession bool) []string {
 	args := []string{
 		fmt.Sprintf("--user-data-dir=%s", userDataDir),
 		fmt.Sprintf("--remote-debugging-port=%d", debugPort),
@@ -318,11 +363,6 @@ func buildBrowserLaunchArgs(userDataDir string, debugPort int, effectiveProxy st
 		args = append(args, "--no-proxy-server")
 	} else if effectiveProxy != "" {
 		args = append(args, fmt.Sprintf("--proxy-server=%s", effectiveProxy))
-	}
-
-	if extensionArg := strings.Join(normalizeNonEmptyStrings(extensionDirs), ","); extensionArg != "" {
-		args = append(args, fmt.Sprintf("--disable-extensions-except=%s", extensionArg))
-		args = append(args, fmt.Sprintf("--load-extension=%s", extensionArg))
 	}
 
 	args = append(args, normalizeNonEmptyStrings(fingerprintLaunchArgs)...)

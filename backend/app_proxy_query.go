@@ -10,16 +10,25 @@ import (
 )
 
 func (a *App) BrowserProxyList() []BrowserProxy {
+	if a == nil || a.browserMgr == nil || a.browserMgr.ProxyDAO == nil || a.config == nil {
+		return []BrowserProxy{}
+	}
 	return browser.ListProxiesWithFallback(a.browserMgr.ProxyDAO, a.config.Browser.Proxies)
 }
 
 // BrowserProxyListGroups 获取所有代理分组名称
 func (a *App) BrowserProxyListGroups() []string {
+	if a == nil || a.browserMgr == nil || a.browserMgr.ProxyDAO == nil {
+		return []string{}
+	}
 	return browser.ListProxyGroups(a.browserMgr.ProxyDAO)
 }
 
 // BrowserProxyListByGroup 按分组名称查询代理
 func (a *App) BrowserProxyListByGroup(groupName string) []BrowserProxy {
+	if a == nil || a.browserMgr == nil || a.browserMgr.ProxyDAO == nil || a.config == nil {
+		return []BrowserProxy{}
+	}
 	return browser.ListProxiesByGroupWithFallback(a.browserMgr.ProxyDAO, groupName, a.config.Browser.Proxies)
 }
 
@@ -111,7 +120,7 @@ func (a *App) warmupProxyBridge(proxyId string, proxyConfig string, proxies []Br
 		return result
 	}
 
-	resolution, err := proxy.ResolveProxyKernel(src, proxies, proxyId, "")
+	resolution, err := proxy.ResolveProxyKernelForConnector(src, proxies, proxyId, a.defaultProxyConnectorType())
 	result.Engine = resolution.Kernel
 	if err != nil {
 		result.Error = err.Error()
@@ -168,6 +177,9 @@ func (a *App) warmupProxyBridge(proxyId string, proxyConfig string, proxies []Br
 func resolveProxyConfigForApp(proxyConfig string, proxies []BrowserProxy, proxyId string) string {
 	proxyConfig = strings.TrimSpace(proxyConfig)
 	proxyId = strings.TrimSpace(proxyId)
+	if proxyConfig != "" {
+		return proxyConfig
+	}
 	if proxyId == "" {
 		return proxyConfig
 	}

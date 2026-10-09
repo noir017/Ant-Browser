@@ -219,6 +219,47 @@ var migrations = []migration{
 		},
 	},
 	{
+		version: 15,
+		desc:    "插件包持久安装与实例运行态",
+		stmts: []string{
+			`ALTER TABLE browser_extensions ADD COLUMN install_mode TEXT NOT NULL DEFAULT 'persistent'`,
+			`ALTER TABLE browser_extensions ADD COLUMN package_path TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE browser_extensions ADD COLUMN package_hash TEXT NOT NULL DEFAULT ''`,
+			`CREATE TABLE IF NOT EXISTS browser_profile_extension_runtime (
+				profile_id           TEXT NOT NULL,
+				extension_id         TEXT NOT NULL,
+				runtime_extension_id TEXT NOT NULL DEFAULT '',
+				install_mode         TEXT NOT NULL DEFAULT 'persistent',
+				installed_version    TEXT NOT NULL DEFAULT '',
+				package_hash         TEXT NOT NULL DEFAULT '',
+				status               TEXT NOT NULL DEFAULT '',
+				backup_path          TEXT NOT NULL DEFAULT '',
+				last_verified_at     TEXT NOT NULL DEFAULT '',
+				last_error           TEXT NOT NULL DEFAULT '',
+				created_at           TEXT NOT NULL DEFAULT '',
+				updated_at           TEXT NOT NULL DEFAULT '',
+				PRIMARY KEY (profile_id, extension_id)
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_browser_profile_extension_runtime_profile ON browser_profile_extension_runtime(profile_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_browser_profile_extension_runtime_extension ON browser_profile_extension_runtime(extension_id)`,
+		},
+	},
+	{
+		version: 16,
+		desc:    "插件默认安装策略",
+		stmts: []string{
+			`ALTER TABLE browser_extensions ADD COLUMN default_install INTEGER NOT NULL DEFAULT 0`,
+			`CREATE INDEX IF NOT EXISTS idx_browser_extensions_default_install ON browser_extensions(default_install)`,
+		},
+	},
+	{
+		version: 17,
+		desc:    "清理历史插件默认安装误标",
+		stmts: []string{
+			`UPDATE browser_extensions SET default_install = 0`,
+		},
+	},
+	{
 		// 注意：15/16/17 已被历史插件相关迁移占用（部分用户库里已记录），
 		// 这里从 18 开始，避免版本号撞车导致本迁移被当成"已执行"而跳过。
 		version: 18,
@@ -290,16 +331,16 @@ func (db *DB) Migrate() error {
 		return fmt.Errorf("创建 schema_migrations 表失败: %w", err)
 	}
 
-	// 查询已执行的最大版本号
-	var currentVersion int
-	row := db.conn.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_migrations`)
-	if err := row.Scan(&currentVersion); err != nil {
-		return fmt.Errorf("查询当前 schema 版本失败: %w", err)
+	// 按"已记录的版本集合"判断，而不是最大版本号：本分支的 18 先于上游的 15/16/17
+	// 落地，用水位判断会让带 18 的库永远跳过 15/16/17。
+	applied, err := db.appliedMigrationVersions()
+	if err != nil {
+		return err
 	}
 
 	// 按版本顺序执行未执行的迁移
 	for _, m := range migrations {
-		if m.version <= currentVersion {
+		if applied[m.version] {
 			continue // 已执行，跳过
 		}
 
@@ -318,6 +359,25 @@ func (db *DB) Migrate() error {
 	}
 
 	return nil
+}
+
+// appliedMigrationVersions 返回 schema_migrations 中已记录的全部版本号。
+func (db *DB) appliedMigrationVersions() (map[int]bool, error) {
+	rows, err := db.conn.Query(`SELECT version FROM schema_migrations`)
+	if err != nil {
+		return nil, fmt.Errorf("查询已执行的 schema 版本失败: %w", err)
+	}
+	defer rows.Close()
+
+	applied := make(map[int]bool)
+	for rows.Next() {
+		var version int
+		if err := rows.Scan(&version); err != nil {
+			return nil, fmt.Errorf("读取 schema 版本失败: %w", err)
+		}
+		applied[version] = true
+	}
+	return applied, rows.Err()
 }
 
 // expectedColumn 描述代码依赖的新增列，用于修复版本号撞车导致的漏执行。

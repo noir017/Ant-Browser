@@ -4,6 +4,7 @@ import (
 	"ant-chrome/backend/internal/browser"
 	"ant-chrome/backend/internal/config"
 	"ant-chrome/backend/internal/logger"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -58,22 +59,37 @@ func (a *App) SaveBrowserSettings(settings BrowserSettings) error {
 }
 
 func (a *App) BrowserCoreList() []BrowserCore {
+	if a == nil || a.browserMgr == nil {
+		return []BrowserCore{}
+	}
 	return a.browserMgr.ListCores()
 }
 
 func (a *App) BrowserCoreSave(input BrowserCoreInput) error {
+	if a == nil || a.browserMgr == nil {
+		return fmt.Errorf(`browser manager is nil`)
+	}
 	return a.browserMgr.SaveCore(input)
 }
 
 func (a *App) BrowserCoreDelete(coreId string) error {
+	if a == nil || a.browserMgr == nil {
+		return fmt.Errorf(`browser manager is nil`)
+	}
 	return a.browserMgr.DeleteCore(coreId)
 }
 
 func (a *App) BrowserCoreSetDefault(coreId string) error {
+	if a == nil || a.browserMgr == nil {
+		return fmt.Errorf(`browser manager is nil`)
+	}
 	return a.browserMgr.SetDefaultCore(coreId)
 }
 
 func (a *App) BrowserCoreValidate(corePath string) BrowserCoreValidateResult {
+	if a == nil || a.browserMgr == nil {
+		return BrowserCoreValidateResult{Valid: false, Message: `browser manager is nil`}
+	}
 	return a.browserMgr.ValidateCorePath(corePath)
 }
 
@@ -103,11 +119,17 @@ func (a *App) BrowserCoreBackendOptions() []BrowserCoreBackendOption {
 }
 
 func (a *App) BrowserCoreExtendedInfo() []BrowserCoreExtendedInfo {
+	if a == nil || a.browserMgr == nil {
+		return []BrowserCoreExtendedInfo{}
+	}
 	return a.browserMgr.GetCoresExtendedInfo()
 }
 
 // BrowserCoreScan 重新扫描 chrome 目录，自动注册新内核
 func (a *App) BrowserCoreScan() []BrowserCore {
+	if a == nil || a.browserMgr == nil {
+		return []BrowserCore{}
+	}
 	a.autoDetectCores()
 	return a.browserMgr.ListCores()
 }
@@ -217,7 +239,7 @@ func (a *App) emitBrowserCoreImportProgress(phase string, progress int, message 
 	if a == nil || a.ctx == nil {
 		return
 	}
-	wailsruntime.EventsEmit(a.ctx, "core-import:progress", map[string]interface{}{
+	a.emitRuntimeEvent("core-import:progress", map[string]interface{}{
 		"phase":    phase,
 		"progress": progress,
 		"message":  message,
@@ -313,18 +335,24 @@ func (a *App) relativeCorePathIfPossible(absDir string) string {
 
 // BrowserCoreDownload 在线下载并自动解压配置内核
 func (a *App) BrowserCoreDownload(coreName, url, proxyConfig string) error {
-	if a.ctx == nil {
-		return fmt.Errorf("app context is nil")
+	a.maintenanceMu.Lock()
+	defer a.maintenanceMu.Unlock()
+	if a.browserMgr == nil {
+		return fmt.Errorf("浏览器管理器未初始化")
 	}
-	go a.browserMgr.DownloadAndExtractCore(a.ctx, coreName, url, proxyConfig)
-	return nil
+	return a.startBackgroundTask(func(ctx context.Context) {
+		a.browserMgr.DownloadAndExtractCore(ctx, coreName, url, proxyConfig)
+	})
 }
 
 // BrowserCoreRedownload 重新下载并替换指定内核目录
 func (a *App) BrowserCoreRedownload(coreId, url, proxyConfig string) error {
-	if a.ctx == nil {
-		return fmt.Errorf("app context is nil")
+	a.maintenanceMu.Lock()
+	defer a.maintenanceMu.Unlock()
+	if a.browserMgr == nil {
+		return fmt.Errorf("浏览器管理器未初始化")
 	}
-	go a.browserMgr.RedownloadCore(a.ctx, coreId, url, proxyConfig)
-	return nil
+	return a.startBackgroundTask(func(ctx context.Context) {
+		a.browserMgr.RedownloadCore(ctx, coreId, url, proxyConfig)
+	})
 }

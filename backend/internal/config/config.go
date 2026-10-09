@@ -1,5 +1,11 @@
 package config
 
+import (
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
+
 const (
 	DefaultLaunchServerPort         = 19876
 	DefaultLaunchServerAPIKeyHeader = "X-Ant-Api-Key"
@@ -71,6 +77,7 @@ type Config struct {
 	LaunchServer LaunchServerConfig `yaml:"launch_server"`
 	MCP          MCPConfig          `yaml:"mcp"`
 	Automation   AutomationConfig   `yaml:"automation"`
+	Backup       BackupConfig       `yaml:"backup"`
 }
 
 type ProxyCheckConfig struct {
@@ -97,6 +104,73 @@ type DatabaseConfig struct {
 
 type SQLiteConfig struct {
 	Path string `yaml:"path"`
+}
+
+type BackupConfig struct {
+	LocalDirectory string               `yaml:"local_directory,omitempty"`
+	Channels       BackupChannelsConfig `yaml:"channels"`
+	Schedule       BackupScheduleConfig `yaml:"schedule"`
+}
+
+type BackupChannelsConfig struct {
+	OpenList OpenListChannelConfig `yaml:"openlist"`
+	S3       S3ChannelConfig       `yaml:"s3,omitempty"`
+}
+
+type OpenListChannelConfig struct {
+	BaseURL             string `yaml:"base_url,omitempty"`
+	RemotePath          string `yaml:"remote_path,omitempty"`
+	Token               string `yaml:"token,omitempty"`
+	UploadRateLimitMBps int    `yaml:"upload_rate_limit_mbps,omitempty"`
+}
+
+type S3ChannelConfig struct {
+	Endpoint        string `yaml:"endpoint,omitempty"`
+	Region          string `yaml:"region,omitempty"`
+	Bucket          string `yaml:"bucket,omitempty"`
+	Prefix          string `yaml:"prefix,omitempty"`
+	AccessKeyID     string `yaml:"access_key_id,omitempty"`
+	SecretAccessKey string `yaml:"secret_access_key,omitempty"`
+	SessionToken    string `yaml:"session_token,omitempty"`
+	ForcePathStyle  bool   `yaml:"force_path_style,omitempty"`
+}
+
+func (c *BackupConfig) UnmarshalYAML(node *yaml.Node) error {
+	var decoded struct {
+		LocalDirectory string                `yaml:"local_directory"`
+		Channels       BackupChannelsConfig  `yaml:"channels"`
+		OpenList       OpenListChannelConfig `yaml:"openlist"`
+		Schedule       BackupScheduleConfig  `yaml:"schedule"`
+	}
+	if err := node.Decode(&decoded); err != nil {
+		return err
+	}
+
+	channels := decoded.Channels
+	openList := channels.OpenList
+	if strings.TrimSpace(openList.BaseURL) == "" {
+		openList.BaseURL = decoded.OpenList.BaseURL
+	}
+	if strings.TrimSpace(openList.RemotePath) == "" {
+		openList.RemotePath = decoded.OpenList.RemotePath
+	}
+	if strings.TrimSpace(openList.Token) == "" {
+		openList.Token = decoded.OpenList.Token
+	}
+	if openList.UploadRateLimitMBps == 0 {
+		openList.UploadRateLimitMBps = decoded.OpenList.UploadRateLimitMBps
+	}
+	channels.OpenList = openList
+	c.LocalDirectory = strings.TrimSpace(decoded.LocalDirectory)
+	c.Channels = channels
+	c.Schedule = decoded.Schedule
+	return nil
+}
+
+type BackupScheduleConfig struct {
+	Enabled           bool     `yaml:"enabled"`
+	DailyTime         string   `yaml:"daily_time"`
+	RecentBackupTimes []string `yaml:"recent_backup_times,omitempty"`
 }
 
 type AppConfig struct {
