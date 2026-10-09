@@ -40,7 +40,8 @@ func applyMCPConfigTo(server *launchcode.LaunchServer, cfg *config.Config, versi
 		path = config.DefaultMCPPath
 	}
 	server.SetMCPHandler(path, mcpserver.New(server, version).Handler(mcpserver.Options{
-		Stateless: cfg.MCP.Stateless,
+		Stateless:    cfg.MCP.Stateless,
+		AllowedHosts: cfg.MCP.AllowedHosts,
 	}))
 }
 

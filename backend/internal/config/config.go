@@ -47,6 +47,10 @@ type MCPConfig struct {
 	// Stateless 为 true 时不维护会话状态，每个请求独立处理。
 	// 适合无状态代理场景；此时 GET / DELETE 会返回 405。
 	Stateless bool `yaml:"stateless,omitempty" json:"stateless"`
+	// AllowedHosts 列出经转发访问时允许的 Host 主机名（端口不参与比对）。
+	// 应用只监听 127.0.0.1，经 relay / 端口转发进来的请求 Host 是对外地址，
+	// 默认会被 DNS rebinding 防护拒绝；在这里列出对外地址即可放行。
+	AllowedHosts []string `yaml:"allowed_hosts,omitempty" json:"allowedHosts"`
 }
 
 type AutomationConfig struct {

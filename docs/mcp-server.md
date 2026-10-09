@@ -77,6 +77,27 @@ stdio 方式不需要额外配置，桥接进程会自己读取本地配置并�
 服务只监听 `127.0.0.1`，并启用了 DNS rebinding 防护（非本机 Host 头会被拒绝），
 恶意网页无法通过浏览器驱动本地服务。
 
+### 经转发从其他机器访问
+
+应用放在端口转发之后时（容器里的 socat relay、`ssh -R` 等），请求都从 `127.0.0.1` 进来，
+Host 头却是对外地址，上面的防护会把它们一律拒掉：
+
+```
+Forbidden: invalid Host header "10.192.168.31:19877"
+```
+
+在 `mcp.allowed_hosts` 里列出客户端实际使用的对外地址即可放行（只写主机名，端口不参与比对）：
+
+```yaml
+mcp:
+    allowed_hosts:
+        - 10.192.168.31
+```
+
+防护本身仍然有效：DNS rebinding 攻击带的是攻击者自己的域名，不会落在白名单里。
+本机直连和 `ssh -L` 转发（Host 为 localhost）一直可用，不需要配置。
+注意 Launch API 本身没有这层 Host 检查，对外暴露端口前请开启 `launch_server.auth`。
+
 ## 配置项
 
 ```yaml
@@ -84,6 +105,7 @@ mcp:
     enabled: true      # 是否启用 MCP 服务
     path: /mcp         # 挂载路径
     stateless: false   # 无状态模式，不维护会话；此时 GET/DELETE 返回 405
+    allowed_hosts: []  # 经转发访问时额外放行的 Host 主机名，见「经转发从其他机器访问」
 ```
 
 端口和鉴权在 `launch_server` 段配置，不在这里重复。

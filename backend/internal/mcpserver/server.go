@@ -81,17 +81,30 @@ type Options struct {
 	// Stateless 为 true 时不维护会话状态，每个请求独立处理。
 	// 此时 GET / DELETE 返回 405，也无法接收服务端主动推送的消息。
 	Stateless bool
+
+	// AllowedHosts 是回环连接上额外放行的 Host 主机名（不含端口），
+	// 用于经 relay / 端口转发从其他机器访问的场景，见 host_guard.go。
+	// 为空时沿用 SDK 默认的 DNS rebinding 防护。
+	AllowedHosts []string
 }
 
 // Handler 返回 Streamable HTTP 形态的 http.Handler，用于挂载到 LaunchServer。
 func (s *Server) Handler(opts Options) http.Handler {
-	return mcp.NewStreamableHTTPHandler(
+	allowed := normalizeAllowedHosts(opts.AllowedHosts)
+	handler := mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server { return s.buildMCPServer() },
 		&mcp.StreamableHTTPOptions{
 			Stateless:      opts.Stateless,
 			SessionTimeout: sessionTimeout,
+			// 有白名单时由 withAllowedHosts 接管同一项检查，SDK 那份必须关掉，
+			// 否则它会先于白名单把请求拒掉。
+			DisableLocalhostProtection: len(allowed) > 0,
 		},
 	)
+	if len(allowed) == 0 {
+		return handler
+	}
+	return withAllowedHosts(handler, allowed)
 }
 
 // MCPServer 暴露底层 *mcp.Server，供 stdio 传输和测试直接使用。

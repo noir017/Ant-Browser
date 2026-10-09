@@ -195,7 +195,7 @@ func normalizeConfig(config *Config) {
 
 	// 整段缺失时套用默认值，让老配置升级后也能拿到完整的 mcp 段；
 	// 否则零值会把 MCP 静默关掉，用户很难察觉。
-	if !config.MCP.Enabled && !config.MCP.Stateless && strings.TrimSpace(config.MCP.Path) == "" {
+	if !config.MCP.Enabled && !config.MCP.Stateless && strings.TrimSpace(config.MCP.Path) == "" && len(config.MCP.AllowedHosts) == 0 {
 		config.MCP = defaultConfig.MCP
 	} else {
 		config.MCP.Path = normalizeMCPPath(config.MCP.Path)
