@@ -34,7 +34,7 @@ func postInitializeWithHost(t *testing.T, endpoint string, host string) int {
 func TestDefaultRejectsForwardedHost(t *testing.T) {
 	endpoint := newHTTPTestServer(t, &fakeProvider{}, Options{})
 
-	if status := postInitializeWithHost(t, endpoint, "10.192.168.31:19877"); status != http.StatusForbidden {
+	if status := postInitializeWithHost(t, endpoint, "10.0.0.31:19877"); status != http.StatusForbidden {
 		t.Fatalf("without allowed hosts a non-loopback Host must be rejected, got %d", status)
 	}
 	if status := postInitializeWithHost(t, endpoint, "localhost:19876"); status != http.StatusOK {
@@ -43,20 +43,20 @@ func TestDefaultRejectsForwardedHost(t *testing.T) {
 }
 
 func TestAllowedHostsPermitsListedHostOnly(t *testing.T) {
-	endpoint := newHTTPTestServer(t, &fakeProvider{}, Options{AllowedHosts: []string{"10.192.168.31"}})
+	endpoint := newHTTPTestServer(t, &fakeProvider{}, Options{AllowedHosts: []string{"10.0.0.31"}})
 
 	cases := []struct {
 		host string
 		want int
 	}{
-		{"10.192.168.31:19877", http.StatusOK},
-		{"10.192.168.31", http.StatusOK},
+		{"10.0.0.31:19877", http.StatusOK},
+		{"10.0.0.31", http.StatusOK},
 		{"127.0.0.1:19876", http.StatusOK},
 		{"localhost", http.StatusOK},
 		// DNS rebinding：攻击者域名解析到同一地址，但 Host 是它自己的名字。
 		{"rebind.attacker.example:19877", http.StatusForbidden},
-		{"10.192.168.32:19877", http.StatusForbidden},
-		{"10.192.168.31.attacker.example", http.StatusForbidden},
+		{"10.0.0.32:19877", http.StatusForbidden},
+		{"10.0.0.31.attacker.example", http.StatusForbidden},
 	}
 	for _, tc := range cases {
 		if status := postInitializeWithHost(t, endpoint, tc.host); status != tc.want {

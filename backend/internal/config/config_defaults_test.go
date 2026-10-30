@@ -53,7 +53,7 @@ func assertStringSliceContains(t *testing.T, values []string, expected string) {
 
 func TestLoadKeepsMCPAllowedHostsAcrossSaveAndLoad(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, []byte("mcp:\n    enabled: true\n    path: /mcp\n    allowed_hosts:\n        - 10.192.168.31\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("mcp:\n    enabled: true\n    path: /mcp\n    allowed_hosts:\n        - 10.0.0.31\n"), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
@@ -61,7 +61,7 @@ func TestLoadKeepsMCPAllowedHostsAcrossSaveAndLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if got := cfg.MCP.AllowedHosts; len(got) != 1 || got[0] != "10.192.168.31" {
+	if got := cfg.MCP.AllowedHosts; len(got) != 1 || got[0] != "10.0.0.31" {
 		t.Fatalf("allowed_hosts not loaded: %v", got)
 	}
 
@@ -72,14 +72,14 @@ func TestLoadKeepsMCPAllowedHostsAcrossSaveAndLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
-	if got := reloaded.MCP.AllowedHosts; len(got) != 1 || got[0] != "10.192.168.31" {
+	if got := reloaded.MCP.AllowedHosts; len(got) != 1 || got[0] != "10.0.0.31" {
 		t.Fatalf("allowed_hosts lost after save: %v", got)
 	}
 }
 
 func TestNormalizeKeepsAllowedHostsOnDisabledMCP(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.MCP = MCPConfig{Enabled: false, AllowedHosts: []string{"10.192.168.31"}}
+	cfg.MCP = MCPConfig{Enabled: false, AllowedHosts: []string{"10.0.0.31"}}
 
 	normalizeConfig(cfg)
 

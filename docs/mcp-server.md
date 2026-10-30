@@ -83,7 +83,7 @@ stdio 方式不需要额外配置，桥接进程会自己读取本地配置并�
 Host 头却是对外地址，上面的防护会把它们一律拒掉：
 
 ```
-Forbidden: invalid Host header "10.192.168.31:19877"
+Forbidden: invalid Host header "10.0.0.31:19877"
 ```
 
 在 `mcp.allowed_hosts` 里列出客户端实际使用的对外地址即可放行（只写主机名，端口不参与比对）：
@@ -91,7 +91,7 @@ Forbidden: invalid Host header "10.192.168.31:19877"
 ```yaml
 mcp:
     allowed_hosts:
-        - 10.192.168.31
+        - 10.0.0.31
 ```
 
 防护本身仍然有效：DNS rebinding 攻击带的是攻击者自己的域名，不会落在白名单里。
