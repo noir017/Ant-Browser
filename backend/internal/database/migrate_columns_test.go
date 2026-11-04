@@ -3,15 +3,14 @@ package database
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
-// 复现真实故障：用户库里已记录 15/16/17（历史插件迁移），
-// 版本水位 MAX(version)=17 会让新追加的迁移被当成"已执行"而跳过。
-// 迁移完成后必须保证代码依赖的列真实存在。
-func TestMigrateAddsCoreColumnsDespiteHigherVersionWatermark(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "legacy.db")
-	db, err := NewDB(dbPath)
+// 用户库的版本水位已达到内核字段迁移号（其他构建或分叉占用过同一个号）时，
+// Migrate 会跳过这条迁移；启动期 Reconcile 必须按迁移语句补齐内核字段，且不丢历史数据。
+func TestReconcileAddsCoreColumnsDespiteHigherVersionWatermark(t *testing.T) {
+	db, err := NewDB(filepath.Join(t.TempDir(), "legacy.db"))
 	if err != nil {
 		t.Fatalf("NewDB returned error: %v", err)
 	}
@@ -31,32 +30,25 @@ func TestMigrateAddsCoreColumnsDespiteHigherVersionWatermark(t *testing.T) {
 	if _, err := conn.Exec(`INSERT INTO browser_cores (core_id, core_name, core_path, is_default) VALUES ('legacy','Legacy','chrome',1)`); err != nil {
 		t.Fatalf("insert legacy row: %v", err)
 	}
-	// 造出高于本次迁移号的版本水位
+	// 造出不低于本次迁移号的版本水位
 	if _, err := conn.Exec(`CREATE TABLE schema_migrations (
 		version    INTEGER PRIMARY KEY,
 		desc       TEXT NOT NULL DEFAULT '',
 		applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)`); err != nil {
 		t.Fatalf("create schema_migrations: %v", err)
 	}
-	for _, version := range []int{15, 16, 17} {
-		if _, err := conn.Exec(`INSERT INTO schema_migrations (version, desc) VALUES (?, ?)`, version, "历史插件迁移"); err != nil {
-			t.Fatalf("seed version %d: %v", version, err)
-		}
+	coreMigration := coreColumnsMigrationVersion(t)
+	if _, err := conn.Exec(`INSERT INTO schema_migrations (version, desc) VALUES (?, ?)`, coreMigration, "其他构建占用的迁移"); err != nil {
+		t.Fatalf("seed version %d: %v", coreMigration, err)
 	}
 
 	if err := db.Migrate(); err != nil {
 		t.Fatalf("Migrate returned error: %v", err)
 	}
-
-	for _, column := range []string{"core_backend", "core_env"} {
-		exists, err := db.columnExists("browser_cores", column)
-		if err != nil {
-			t.Fatalf("columnExists(%s) returned error: %v", column, err)
-		}
-		if !exists {
-			t.Fatalf("column %s missing after Migrate despite version watermark", column)
-		}
+	if _, err := db.Reconcile(t.TempDir()); err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
 	}
+	assertCoreColumns(t, db)
 
 	// 历史数据不能丢
 	var coreName string
@@ -67,9 +59,13 @@ func TestMigrateAddsCoreColumnsDespiteHigherVersionWatermark(t *testing.T) {
 		t.Fatalf("core_name = %q, want Legacy", coreName)
 	}
 
-	// 幂等：重复迁移不应报错
-	if err := db.Migrate(); err != nil {
-		t.Fatalf("second Migrate returned error: %v", err)
+	// 幂等：再次对齐不应有任何补齐语句
+	report, err := db.Reconcile(t.TempDir())
+	if err != nil {
+		t.Fatalf("second Reconcile returned error: %v", err)
+	}
+	if report.AppliedStmts != 0 {
+		t.Fatalf("second Reconcile applied %d stmts, want 0", report.AppliedStmts)
 	}
 }
 
@@ -84,19 +80,11 @@ func TestMigrateFreshDatabaseHasCoreColumns(t *testing.T) {
 	if err := db.Migrate(); err != nil {
 		t.Fatalf("Migrate returned error: %v", err)
 	}
-	for _, column := range []string{"core_backend", "core_env"} {
-		exists, err := db.columnExists("browser_cores", column)
-		if err != nil {
-			t.Fatalf("columnExists(%s) returned error: %v", column, err)
-		}
-		if !exists {
-			t.Fatalf("fresh database missing column %s", column)
-		}
-	}
+	assertCoreColumns(t, db)
 }
 
 // 针对真实用户库的回归验证：如果仓库根目录存在 data/app.db，
-// 用它的副本跑一次迁移，确认能自愈出缺失列。
+// 用它的副本按启动顺序跑一次迁移与对齐，确认内核字段存在。
 func TestMigrateRealDatabaseCopyIfPresent(t *testing.T) {
 	source := filepath.Join("..", "..", "..", "data", "app.db")
 	raw, err := os.ReadFile(source)
@@ -118,13 +106,51 @@ func TestMigrateRealDatabaseCopyIfPresent(t *testing.T) {
 	if err := db.Migrate(); err != nil {
 		t.Fatalf("Migrate on real database copy returned error: %v", err)
 	}
-	for _, column := range []string{"core_backend", "core_env"} {
-		exists, err := db.columnExists("browser_cores", column)
-		if err != nil {
-			t.Fatalf("columnExists(%s) returned error: %v", column, err)
+	if _, err := db.Reconcile(t.TempDir()); err != nil {
+		t.Fatalf("Reconcile on real database copy returned error: %v", err)
+	}
+	assertCoreColumns(t, db)
+}
+
+func coreColumnsMigrationVersion(t *testing.T) int {
+	t.Helper()
+	for _, m := range migrations {
+		for _, stmt := range m.stmts {
+			if strings.Contains(stmt, "browser_cores ADD COLUMN core_backend") {
+				return m.version
+			}
 		}
-		if !exists {
-			t.Fatalf("real database copy missing column %s after Migrate", column)
+	}
+	t.Fatal("core_backend migration not found")
+	return 0
+}
+
+func assertCoreColumns(t *testing.T, db *DB) {
+	t.Helper()
+	rows, err := db.GetConn().Query(`PRAGMA table_info(browser_cores)`)
+	if err != nil {
+		t.Fatalf("PRAGMA table_info returned error: %v", err)
+	}
+	defer rows.Close()
+
+	found := map[string]bool{}
+	for rows.Next() {
+		var (
+			cid, notNull, primaryKey int
+			name, columnType         string
+			dfltValue                any
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &dfltValue, &primaryKey); err != nil {
+			t.Fatalf("scan table_info: %v", err)
+		}
+		found[strings.ToLower(name)] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate table_info: %v", err)
+	}
+	for _, column := range []string{"core_backend", "core_env"} {
+		if !found[column] {
+			t.Fatalf("browser_cores missing column %s", column)
 		}
 	}
 }

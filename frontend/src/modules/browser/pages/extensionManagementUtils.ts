@@ -1,4 +1,4 @@
-import type { BrowserExtension, BrowserProxy } from '../types'
+import type { BrowserExtension } from '../types'
 
 export const EXTENSION_HISTORY_STORAGE_KEY = 'ant-chrome.extensionManagement.history.v1'
 export const EXTENSION_DOWNLOAD_PROXY_STORAGE_KEY = 'ant-chrome.extensionManagement.downloadProxy.v1'
@@ -99,14 +99,6 @@ export function extensionHistoryActionLabel(action: ExtensionHistoryAction): str
   return '查询'
 }
 
-export function getProxySpeedState(proxy: BrowserProxy): { ok: boolean; latencyMs: number; error: string } | undefined {
-  if (!proxy.lastTestedAt) return undefined
-  return {
-    ok: proxy.lastTestOk === true,
-    latencyMs: proxy.lastTestOk ? proxy.lastLatencyMs || 0 : 0,
-    error: proxy.lastTestOk ? '' : '连接失败',
-  }
-}
 
 export function sameStringSet(first: string[], second: string[]): boolean {
   if (first.length !== second.length) return false

@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import type { SortOrder } from '../../../../shared/components/Table'
-import type { ProxyIPHealthResult } from '../../types'
+import type { BrowserProxyVirtualGroup, ProxyIPHealthResult } from '../../types'
 import type { ProxyDisplayInfo } from './helpers'
 
 interface UseProxyPoolFilterOptions {
@@ -9,6 +9,7 @@ interface UseProxyPoolFilterOptions {
   filterKeyword: string
   filterGroup: string
   filterAvailableOnly: boolean
+  virtualGroups: BrowserProxyVirtualGroup[]
   sortColumn: string
   sortOrder: SortOrder
   latencyMap: Record<string, number>
@@ -28,12 +29,20 @@ function getLatencySortTuple(latencyMap: Record<string, number>, proxyId: string
 }
 
 function isProxyAvailable(
-  proxyId: string,
+  proxy: ProxyDisplayInfo,
+  displayByProxyId: Map<string, ProxyDisplayInfo>,
   latencyMap: Record<string, number>,
   ipHealthMap: Record<string, ProxyIPHealthResult>,
 ) {
-  const latency = latencyMap[proxyId]
-  return (typeof latency === 'number' && latency >= 0) || Boolean(ipHealthMap[proxyId]?.ok)
+  const memberProxyIds = proxy.isVirtual ? (proxy.virtualMemberProxyIds || []) : [proxy.proxyId]
+  return memberProxyIds.some(rawProxyId => {
+    const memberProxy = displayByProxyId.get(rawProxyId.trim().toLowerCase())
+    const id = memberProxy?.proxyId || rawProxyId.trim()
+    const latency = latencyMap[id]
+    const speedAvailable = typeof latency === 'number' && latency >= 0
+    const ipHealth = ipHealthMap[id] || ipHealthMap[rawProxyId]
+    return speedAvailable || Boolean(ipHealth?.ok)
+  })
 }
 
 function compareByColumn(
@@ -72,6 +81,7 @@ export function useProxyPoolFilter(options: UseProxyPoolFilterOptions) {
     filterKeyword,
     filterGroup,
     filterAvailableOnly,
+    virtualGroups,
     sortColumn,
     sortOrder,
     latencyMap,
@@ -85,11 +95,25 @@ export function useProxyPoolFilter(options: UseProxyPoolFilterOptions) {
 
   const filteredList = useMemo(() => {
     const keyword = filterKeyword.toLowerCase()
+    const displayByProxyId = new Map(
+      displayList
+        .filter(record => !record.isVirtual)
+        .map(record => [record.proxyId.trim().toLowerCase(), record] as const),
+    )
+    const selectedVirtualGroup = virtualGroups.find(group => {
+      const key = group.groupId.trim() || group.groupName.trim().toLowerCase()
+      return filterGroup === `__virtual_proxy_group__:${key}`
+    })
+    const virtualMemberIDs = new Set((selectedVirtualGroup?.memberProxyIds || []).map(proxyId => proxyId.trim().toLowerCase()))
+    const virtualMemberGroupNames = new Set((selectedVirtualGroup?.memberGroupNames || []).map(groupName => groupName.trim().toLowerCase()))
     const filtered = displayList.filter(p => {
       const matchProtocol = filterProtocol === 'all' || p.type === filterProtocol
       const matchKeyword = !keyword || p.proxyName.toLowerCase().includes(keyword) || p.server.toLowerCase().includes(keyword)
-      const matchGroup = filterGroup === 'all' || p.groupName === filterGroup
-      const matchAvailable = !filterAvailableOnly || isProxyAvailable(p.proxyId, latencyMap, ipHealthMap)
+      const matchGroup = selectedVirtualGroup
+        ? p.proxyConfig !== 'direct://'
+          && (virtualMemberIDs.has(p.proxyId.trim().toLowerCase()) || virtualMemberGroupNames.has(p.groupName.trim().toLowerCase()))
+        : filterGroup === 'all' || p.groupName === filterGroup
+      const matchAvailable = !filterAvailableOnly || isProxyAvailable(p, displayByProxyId, latencyMap, ipHealthMap)
       return matchProtocol && matchKeyword && matchGroup && matchAvailable
     })
 
@@ -98,7 +122,18 @@ export function useProxyPoolFilter(options: UseProxyPoolFilterOptions) {
       const cmp = compareByColumn(latencyMap, a, b, sortColumn)
       return sortOrder === 'asc' ? cmp : -cmp
     })
-  }, [displayList, filterProtocol, filterKeyword, filterGroup, filterAvailableOnly, sortColumn, sortOrder, latencyMap, ipHealthMap])
+  }, [
+    displayList,
+    filterProtocol,
+    filterKeyword,
+    filterGroup,
+    filterAvailableOnly,
+    sortColumn,
+    sortOrder,
+    latencyMap,
+    ipHealthMap,
+    virtualGroups,
+  ])
 
   return { protocolOptions, filteredList }
 }

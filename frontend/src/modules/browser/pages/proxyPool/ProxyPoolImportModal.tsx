@@ -1,4 +1,4 @@
-import { Button, FormItem, Input, Modal, Select, Textarea } from '../../../../shared/components'
+import { Button, FormItem, Input, Modal, Select, Switch, Textarea } from '../../../../shared/components'
 import type { BrowserProxy } from '../../types'
 import {
   CHAIN_QUICK_IMPORT_TEMPLATE,
@@ -15,6 +15,8 @@ interface ProxyPoolImportModalProps {
   importMode: ProxyImportMode
   importUrl: string
   importFetchProxyId: string
+  importAutoRefresh: boolean
+  importRefreshIntervalM: number
   importResolvedUrl: string
   importText: string
   importDnsServers: string
@@ -33,6 +35,8 @@ interface ProxyPoolImportModalProps {
   onImportModeChange: (nextMode: ProxyImportMode) => void
   onImportUrlChange: (nextValue: string) => void
   onImportFetchProxyIdChange: (nextValue: string) => void
+  onImportAutoRefreshChange: (nextValue: boolean) => void
+  onImportRefreshIntervalMChange: (nextValue: number) => void
   onImportTextChange: (nextValue: string) => void
   onImportDnsServersChange: (nextValue: string) => void
   onImportNamePrefixChange: (nextValue: string) => void
@@ -62,6 +66,8 @@ export function ProxyPoolImportModal({
   importMode,
   importUrl,
   importFetchProxyId,
+  importAutoRefresh,
+  importRefreshIntervalM,
   importResolvedUrl,
   importText,
   importDnsServers,
@@ -80,6 +86,8 @@ export function ProxyPoolImportModal({
   onImportModeChange,
   onImportUrlChange,
   onImportFetchProxyIdChange,
+  onImportAutoRefreshChange,
+  onImportRefreshIntervalMChange,
   onImportTextChange,
   onImportDnsServersChange,
   onImportNamePrefixChange,
@@ -150,10 +158,13 @@ export function ProxyPoolImportModal({
                   disabled={fetchingImportUrl}
                   options={[
                     { value: '', label: '直连拉取' },
-                    ...fetchProxyOptions.map(proxy => ({
-                      value: proxy.proxyId,
-                      label: proxy.proxyName || proxy.proxyId,
-                    })),
+                    ...fetchProxyOptions.map(proxy => {
+                      const latency = proxy.lastLatencyMs
+                      return {
+                        value: proxy.proxyId,
+                        label: `${proxy.proxyName || proxy.proxyId}${typeof latency === 'number' && latency > 0 ? ` · ${latency}ms` : ''}`,
+                      }
+                    }),
                   ]}
                 />
                 <Button
@@ -414,6 +425,34 @@ export function ProxyPoolImportModal({
             />
             <p className="text-xs text-[var(--color-text-muted)] mt-1">
               填写后代理名称将变为 <code className="px-1 bg-[var(--color-bg-secondary)] rounded">前缀-原名称</code>，留空则保持原名
+            </p>
+          </FormItem>
+        )}
+        {importMode === 'clash' && (
+          <FormItem label="定时刷新">
+            <div className="flex items-center gap-2">
+              <Switch
+                checked={importAutoRefresh}
+                onChange={onImportAutoRefreshChange}
+              />
+              {importAutoRefresh && (
+                <Select
+                  value={String(importRefreshIntervalM)}
+                  onChange={(event) => onImportRefreshIntervalMChange(Number(event.target.value) || 1440)}
+                  className="w-40"
+                  options={[
+                    { value: '60', label: '每 1 小时' },
+                    { value: '360', label: '每 6 小时' },
+                    { value: '720', label: '每 12 小时' },
+                    { value: '1440', label: '每 24 小时' },
+                  ]}
+                />
+              )}
+            </div>
+            <p className="text-xs text-[var(--color-text-muted)] mt-1">
+              {importAutoRefresh
+                ? '开启后按所选间隔在后台拉取同步；应用没开也不会错过，下次启动时自动补拉。节点按名称/国家自动匹配更新'
+                : '关闭：仅手动点“刷新订阅”时拉取'}
             </p>
           </FormItem>
         )}

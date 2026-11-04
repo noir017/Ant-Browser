@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"ant-chrome/backend/internal/browser"
@@ -134,6 +135,227 @@ func TestProfilePackageDatabaseRoundTripSelectedProfile(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(targetCfg.Browser.UserDataRoot, newProfileID, "Preferences")); err != nil {
 		t.Fatalf("imported user data missing: %v", err)
+	}
+}
+
+func TestProfilePackageDatabaseRoundTripsDynamicProxySelection(t *testing.T) {
+	sourceRoot := t.TempDir()
+	sourceDB := newProfilePackageDatabase(t, sourceRoot)
+	sourceProfile := &browser.Profile{
+		ProfileId:      "source-dynamic-profile",
+		ProfileName:    "动态代理实例",
+		ProxyMode:      browser.ProxyModeDynamic,
+		ProxyGroupName: "mobile",
+	}
+	if _, err := sourceDB.GetConn().Exec(`INSERT INTO browser_proxies (proxy_id, proxy_name, proxy_config, sort_order, created_at)
+VALUES ('source-dynamic-proxy', '动态代理节点', 'socks5://source:1080', 0, '2026-08-30T00:00:00Z')`); err != nil {
+		t.Fatalf("insert source proxy failed: %v", err)
+	}
+	if _, err := sourceDB.GetConn().Exec(`INSERT INTO browser_proxy_virtual_groups (
+	group_id, group_name, strategy, selected_proxy_id, member_proxy_ids, member_group_names, sort_order, created_at, updated_at
+) VALUES ('source-dynamic-group', 'mobile', 'round_robin', 'source-dynamic-proxy', '["source-dynamic-proxy"]', '[]', 0, '2026-08-30T00:00:00Z', '2026-08-30T00:00:00Z')`); err != nil {
+		t.Fatalf("insert source virtual group failed: %v", err)
+	}
+	sourceDAO := browser.NewSQLiteProfileDAO(sourceDB.GetConn())
+	if err := sourceDAO.Upsert(sourceProfile); err != nil {
+		t.Fatalf("save source profile failed: %v", err)
+	}
+	storedSource, err := sourceDAO.GetById(sourceProfile.ProfileId)
+	if err != nil {
+		t.Fatalf("read source profile failed: %v", err)
+	}
+	sourceApp := NewApp(sourceRoot)
+	sourceApp.db = sourceDB
+	snapshot, err := sourceApp.collectProfilePackageDatabase([]browser.Profile{*storedSource})
+	if err != nil {
+		t.Fatalf("collect profile package database failed: %v", err)
+	}
+	encoded, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("encode profile package database failed: %v", err)
+	}
+	if err := json.Unmarshal(encoded, &snapshot); err != nil {
+		t.Fatalf("decode profile package database failed: %v", err)
+	}
+
+	targetRoot := t.TempDir()
+	targetDB := newProfilePackageDatabase(t, targetRoot)
+	targetApp := NewApp(targetRoot)
+	targetApp.db = targetDB
+	preparedProfile := snapshot.Profiles[0]
+	preparedProfile.ProfileId = "target-dynamic-profile"
+	prepared := []preparedProfilePackageImport{{
+		Profile:      preparedProfile,
+		OldProfileID: sourceProfile.ProfileId,
+	}}
+	if err := targetApp.restoreProfilePackageDatabase(snapshot, prepared, nil); err != nil {
+		t.Fatalf("restore profile package database failed: %v", err)
+	}
+	storedTarget, err := browser.NewSQLiteProfileDAO(targetDB.GetConn()).GetById(preparedProfile.ProfileId)
+	if err != nil {
+		t.Fatalf("read imported profile failed: %v", err)
+	}
+	if storedTarget.ProxyMode != browser.ProxyModeDynamic || storedTarget.ProxyGroupName != "mobile" {
+		t.Fatalf("dynamic proxy selection = (%q, %q), want (%q, %q)", storedTarget.ProxyMode, storedTarget.ProxyGroupName, browser.ProxyModeDynamic, "mobile")
+	}
+}
+
+func TestProfilePackageDatabaseMaterializesDynamicVirtualGroupMembers(t *testing.T) {
+	sourceRoot := t.TempDir()
+	sourceDB := newProfilePackageDatabase(t, sourceRoot)
+	sourceProfile := &browser.Profile{
+		ProfileId:      "source-dynamic-members-profile",
+		ProfileName:    "动态代理实例",
+		ProxyMode:      browser.ProxyModeDynamic,
+		ProxyGroupName: "mobile-pool",
+	}
+	if _, err := sourceDB.GetConn().Exec(`INSERT INTO browser_proxies (proxy_id, proxy_name, proxy_config, group_name, sort_order, created_at)
+VALUES ('mobile-1', '移动节点 1', 'socks5://source-1:1080', 'mobile', 0, '2026-08-30T00:00:00Z'),
+       ('mobile-2', '移动节点 2', 'socks5://source-2:1080', 'mobile', 1, '2026-08-30T00:00:00Z'),
+       ('desktop-1', '桌面节点', 'socks5://source-3:1080', 'desktop', 2, '2026-08-30T00:00:00Z')`); err != nil {
+		t.Fatalf("insert source proxies failed: %v", err)
+	}
+	if _, err := sourceDB.GetConn().Exec(`INSERT INTO browser_proxy_virtual_groups (
+	group_id, group_name, strategy, selected_proxy_id, member_proxy_ids, member_group_names, sort_order, created_at, updated_at
+) VALUES ('source-dynamic-members-group', 'mobile-pool', 'round_robin', '', '["mobile-1"]', '["mobile"]', 0, '2026-08-30T00:00:00Z', '2026-08-30T00:00:00Z')`); err != nil {
+		t.Fatalf("insert source virtual group failed: %v", err)
+	}
+	sourceDAO := browser.NewSQLiteProfileDAO(sourceDB.GetConn())
+	if err := sourceDAO.Upsert(sourceProfile); err != nil {
+		t.Fatalf("save source profile failed: %v", err)
+	}
+	storedSource, err := sourceDAO.GetById(sourceProfile.ProfileId)
+	if err != nil {
+		t.Fatalf("read source profile failed: %v", err)
+	}
+	sourceApp := NewApp(sourceRoot)
+	sourceApp.db = sourceDB
+	snapshot, err := sourceApp.collectProfilePackageDatabase([]browser.Profile{*storedSource})
+	if err != nil {
+		t.Fatalf("collect profile package database failed: %v", err)
+	}
+	if len(snapshot.ProxyVirtualGroups) != 1 {
+		t.Fatalf("snapshot virtual groups = %#v, want one group", snapshot.ProxyVirtualGroups)
+	}
+	group := snapshot.ProxyVirtualGroups[0]
+	if len(group.MemberGroupNames) != 0 {
+		t.Fatalf("snapshot dynamic member group names = %#v, want materialized members", group.MemberGroupNames)
+	}
+	if len(group.MemberProxyIds) != 2 || group.MemberProxyIds[0] != "mobile-1" || group.MemberProxyIds[1] != "mobile-2" {
+		t.Fatalf("snapshot virtual group members = %#v, want [mobile-1 mobile-2]", group.MemberProxyIds)
+	}
+	if len(snapshot.Proxies) != 2 {
+		t.Fatalf("snapshot proxies = %d, want two materialized members", len(snapshot.Proxies))
+	}
+
+	targetRoot := t.TempDir()
+	targetDB := newProfilePackageDatabase(t, targetRoot)
+	targetApp := NewApp(targetRoot)
+	targetApp.db = targetDB
+	preparedProfile := snapshot.Profiles[0]
+	preparedProfile.ProfileId = "target-dynamic-members-profile"
+	prepared := []preparedProfilePackageImport{{
+		Profile:      preparedProfile,
+		OldProfileID: sourceProfile.ProfileId,
+	}}
+	if err := targetApp.restoreProfilePackageDatabase(snapshot, prepared, nil); err != nil {
+		t.Fatalf("restore profile package database failed: %v", err)
+	}
+
+	var memberProxyIDsJSON, memberGroupNamesJSON string
+	if err := targetDB.GetConn().QueryRow(`SELECT member_proxy_ids, member_group_names FROM browser_proxy_virtual_groups WHERE group_name = 'mobile-pool'`).Scan(&memberProxyIDsJSON, &memberGroupNamesJSON); err != nil {
+		t.Fatalf("read imported virtual group failed: %v", err)
+	}
+	var memberProxyIDs []string
+	if err := json.Unmarshal([]byte(memberProxyIDsJSON), &memberProxyIDs); err != nil {
+		t.Fatalf("decode imported virtual group members failed: %v", err)
+	}
+	if len(memberProxyIDs) != 2 || memberProxyIDs[0] == "" || memberProxyIDs[1] == "" || memberGroupNamesJSON != "[]" {
+		t.Fatalf("imported virtual group members = %v, dynamic names = %s", memberProxyIDs, memberGroupNamesJSON)
+	}
+}
+
+func TestProfilePackageImportPreservesLocalVirtualGroupOnNameConflict(t *testing.T) {
+	sourceRoot := t.TempDir()
+	sourceDB := newProfilePackageDatabase(t, sourceRoot)
+	sourceProfile := &browser.Profile{
+		ProfileId:      "source-conflict-profile",
+		ProfileName:    "导入实例",
+		ProxyMode:      browser.ProxyModeDynamic,
+		ProxyGroupName: "mobile",
+	}
+	if _, err := sourceDB.GetConn().Exec(`INSERT INTO browser_proxies (proxy_id, proxy_name, proxy_config, sort_order, created_at)
+VALUES ('shared-proxy-id', '源代理', 'socks5://source:1080', 0, '2026-08-30T00:00:00Z')`); err != nil {
+		t.Fatalf("insert source proxy failed: %v", err)
+	}
+	if _, err := sourceDB.GetConn().Exec(`INSERT INTO browser_proxy_virtual_groups (
+	group_id, group_name, strategy, selected_proxy_id, member_proxy_ids, member_group_names, sort_order, created_at, updated_at
+) VALUES ('source-conflict-group', 'mobile', 'sticky', 'shared-proxy-id', '["shared-proxy-id"]', '[]', 0, '2026-08-30T00:00:00Z', '2026-08-30T00:00:00Z')`); err != nil {
+		t.Fatalf("insert source virtual group failed: %v", err)
+	}
+	if err := browser.NewSQLiteProfileDAO(sourceDB.GetConn()).Upsert(sourceProfile); err != nil {
+		t.Fatalf("save source profile failed: %v", err)
+	}
+	storedSource, err := browser.NewSQLiteProfileDAO(sourceDB.GetConn()).GetById(sourceProfile.ProfileId)
+	if err != nil {
+		t.Fatalf("read source profile failed: %v", err)
+	}
+	sourceApp := NewApp(sourceRoot)
+	sourceApp.db = sourceDB
+	snapshot, err := sourceApp.collectProfilePackageDatabase([]browser.Profile{*storedSource})
+	if err != nil {
+		t.Fatalf("collect profile package database failed: %v", err)
+	}
+
+	targetRoot := t.TempDir()
+	targetDB := newProfilePackageDatabase(t, targetRoot)
+	if _, err := targetDB.GetConn().Exec(`INSERT INTO browser_proxies (proxy_id, proxy_name, proxy_config, sort_order, created_at)
+VALUES ('shared-proxy-id', '本地代理', 'socks5://local:1080', 0, '2026-08-30T00:00:00Z')`); err != nil {
+		t.Fatalf("insert target proxy failed: %v", err)
+	}
+	if _, err := targetDB.GetConn().Exec(`INSERT INTO browser_proxy_virtual_groups (
+	group_id, group_name, strategy, selected_proxy_id, member_proxy_ids, member_group_names, sort_order, created_at, updated_at
+) VALUES ('target-local-group', 'mobile', 'round_robin', '', '["local-proxy"]', '[]', 0, '2026-08-30T00:00:00Z', '2026-08-30T00:00:00Z')`); err != nil {
+		t.Fatalf("insert target virtual group failed: %v", err)
+	}
+	targetApp := NewApp(targetRoot)
+	targetApp.db = targetDB
+	preparedProfile := snapshot.Profiles[0]
+	preparedProfile.ProfileId = "target-conflict-profile"
+	warnings := make([]string, 0)
+	if err := targetApp.restoreProfilePackageDatabase(snapshot, []preparedProfilePackageImport{{
+		Profile: preparedProfile, OldProfileID: sourceProfile.ProfileId,
+	}}, &warnings); err != nil {
+		t.Fatalf("restore profile package database failed: %v", err)
+	}
+
+	var localMembers string
+	if err := targetDB.GetConn().QueryRow(`SELECT member_proxy_ids FROM browser_proxy_virtual_groups WHERE group_name = 'mobile'`).Scan(&localMembers); err != nil {
+		t.Fatalf("read local virtual group failed: %v", err)
+	}
+	if localMembers != `["local-proxy"]` {
+		t.Fatalf("local virtual group was modified: %s", localMembers)
+	}
+	var importedGroupName, importedMembers, importedSelectedProxyID string
+	if err := targetDB.GetConn().QueryRow(`SELECT group_name, member_proxy_ids, selected_proxy_id FROM browser_proxy_virtual_groups WHERE group_name = 'mobile (导入)'`).Scan(&importedGroupName, &importedMembers, &importedSelectedProxyID); err != nil {
+		t.Fatalf("read imported virtual group failed: %v", err)
+	}
+	var importedProxyIDs []string
+	if err := json.Unmarshal([]byte(importedMembers), &importedProxyIDs); err != nil {
+		t.Fatalf("decode imported virtual group members failed: %v", err)
+	}
+	if len(importedProxyIDs) != 1 || importedProxyIDs[0] == "shared-proxy-id" || importedSelectedProxyID != importedProxyIDs[0] {
+		t.Fatalf("imported virtual group proxy mapping = members %v, selected %q", importedProxyIDs, importedSelectedProxyID)
+	}
+	storedTarget, err := browser.NewSQLiteProfileDAO(targetDB.GetConn()).GetById(preparedProfile.ProfileId)
+	if err != nil {
+		t.Fatalf("read imported profile failed: %v", err)
+	}
+	if storedTarget.ProxyGroupName != importedGroupName {
+		t.Fatalf("imported profile group = %q, want %q", storedTarget.ProxyGroupName, importedGroupName)
+	}
+	if len(warnings) == 0 {
+		t.Fatal("expected a warning for the virtual group name conflict")
 	}
 }
 
@@ -403,6 +625,56 @@ func insertProfilePackageDatabaseFixtures(t *testing.T, conn *sql.DB, profile br
 	}
 	if err := extensionDAO.UpsertProfileExtensionRuntime(browser.ProfileExtensionRuntime{ProfileID: profile.ProfileId, ExtensionID: extensionID, RuntimeExtensionID: "runtime-source-extension", Status: browser.ExtensionRuntimeStatusInstalled, CreatedAt: profile.CreatedAt, UpdatedAt: profile.UpdatedAt}); err != nil {
 		t.Fatalf("insert extension runtime failed: %v", err)
+	}
+}
+
+// 导入包缺少代理记录时必须保留原代理绑定：清空后会变成「ID 与配置双空」实例，
+// 早期版本还会在启动时直接落到直连（暴露真实 IP）。
+func TestProfilePackageImportKeepsProxyBindingWhenProxyMissing(t *testing.T) {
+	root := t.TempDir()
+	db := newProfilePackageDatabase(t, root)
+	cfg := config.DefaultConfig()
+	app := NewApp(root)
+	app.config = cfg
+	app.db = db
+	app.browserMgr = browser.NewManager(cfg, root)
+
+	snapshot := ProfilePackageDatabase{
+		Format:  profilePackageDatabaseFormat,
+		Version: profilePackageDatabaseVersion,
+		Profiles: []browser.Profile{{
+			ProfileId:   "old-profile",
+			ProfileName: "缺代理实例",
+			ProxyId:     "missing-proxy",
+			ProxyConfig: "http://missing-proxy:8080",
+		}},
+	}
+	prepared := []preparedProfilePackageImport{{
+		OldProfileID: "old-profile",
+		Profile: browser.Profile{
+			ProfileId:   "new-profile",
+			ProfileName: "缺代理实例",
+			UserDataDir: "new-profile",
+			ProxyId:     "missing-proxy",
+			ProxyConfig: "http://missing-proxy:8080",
+			CreatedAt:   "2026-08-31T00:00:00Z",
+			UpdatedAt:   "2026-08-31T00:00:00Z",
+		},
+	}}
+	warnings := make([]string, 0, 1)
+	if err := app.restoreProfilePackageDatabase(snapshot, prepared, &warnings); err != nil {
+		t.Fatalf("restoreProfilePackageDatabase returned error: %v", err)
+	}
+
+	stored, err := browser.NewSQLiteProfileDAO(db.GetConn()).GetById("new-profile")
+	if err != nil {
+		t.Fatalf("read imported profile failed: %v", err)
+	}
+	if stored.ProxyId != "missing-proxy" || stored.ProxyConfig != "http://missing-proxy:8080" {
+		t.Fatalf("导入时清空了代理绑定: proxyId=%q proxyConfig=%q", stored.ProxyId, stored.ProxyConfig)
+	}
+	if joined := strings.Join(warnings, "；"); !strings.Contains(joined, "保留原代理绑定") {
+		t.Fatalf("缺少保留绑定的告警: %v", warnings)
 	}
 }
 

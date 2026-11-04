@@ -22,6 +22,43 @@ func TestBackupScheduleMatchesTime(t *testing.T) {
 	}
 }
 
+func TestBackupScheduleDueRunsAfterConfiguredMinute(t *testing.T) {
+	now := time.Date(2026, time.August, 26, 2, 3, 30, 0, time.Local)
+	if !backupScheduleDue("02:03", now) {
+		t.Fatal("schedule should be due after the configured minute")
+	}
+	if backupScheduleDue("02:04", now) {
+		t.Fatal("schedule should not be due before the configured minute")
+	}
+}
+
+func TestBackupScheduleDateForTimestampUsesLocalDate(t *testing.T) {
+	if got := backupScheduleDateForTimestamp("2026-08-26T16:03:00Z"); got == "" {
+		t.Fatal("valid timestamp should produce a schedule date")
+	}
+	if got := backupScheduleDateForTimestamp("invalid"); got != "" {
+		t.Fatalf("invalid timestamp date = %q, want empty", got)
+	}
+}
+
+func TestBackupSchedulerFailureSchedulesRetryWithoutMarkingDayComplete(t *testing.T) {
+	scheduler := newBackupScheduler(NewApp(t.TempDir()))
+	scheduler.recordFailure("OpenList unavailable")
+	if scheduler.lastDate != "" {
+		t.Fatalf("failed backup lastDate = %q, want empty", scheduler.lastDate)
+	}
+	if scheduler.nextAttemptAt.IsZero() {
+		t.Fatal("failed backup did not schedule a retry")
+	}
+	scheduler.recordSuccessAt("2026-08-26T02:03:00Z", "backup.zip")
+	if scheduler.lastDate == "" {
+		t.Fatal("successful backup did not mark the completed date")
+	}
+	if !scheduler.nextAttemptAt.IsZero() {
+		t.Fatalf("successful backup nextAttemptAt = %v, want zero", scheduler.nextAttemptAt)
+	}
+}
+
 func TestBackupScheduledSaveSettingsStoresTokenLocally(t *testing.T) {
 	appRoot := t.TempDir()
 	app := NewApp(appRoot)
@@ -88,6 +125,67 @@ func TestBackupScheduledSaveSettingsStoresTokenLocally(t *testing.T) {
 		"dailyTime": "03:15",
 	}); err != nil {
 		t.Fatalf("saving with an empty token should reuse the stored token: %v", err)
+	}
+}
+
+func TestBackupScheduledSaveSettingsStoresBasicCredentialsLocally(t *testing.T) {
+	appRoot := t.TempDir()
+	app := NewApp(appRoot)
+	app.config = config.DefaultConfig()
+	scheduler := newBackupScheduler(app)
+
+	result, err := scheduler.saveOpenList(map[string]string{
+		"baseURL":  "http" + "://127.0.0.1:5244/dav",
+		"authMode": "basic",
+		"username": "webdav-user",
+		"password": "webdav-password",
+	})
+	if err != nil {
+		t.Fatalf("save returned error: %v", err)
+	}
+	if result["authMode"] != "basic" || result["authConfigured"] != true {
+		t.Fatalf("saved auth result = %#v, want configured basic auth", result)
+	}
+	if result["tokenConfigured"] != false {
+		t.Fatalf("tokenConfigured = %#v, want false", result["tokenConfigured"])
+	}
+	if _, ok := result["passwordConfigured"]; !ok {
+		t.Fatal("saved settings must expose passwordConfigured")
+	}
+	if _, ok := result["password"]; ok {
+		t.Fatal("saved settings response must not include password")
+	}
+
+	if _, err := scheduler.saveSchedule(map[string]string{
+		"enabled":   "true",
+		"dailyTime": "03:15",
+	}); err != nil {
+		t.Fatalf("basic-auth schedule save returned error: %v", err)
+	}
+
+	localData, err := os.ReadFile(filepath.Join(appRoot, backupLocalConfigFileName))
+	if err != nil {
+		t.Fatalf("read local backup config: %v", err)
+	}
+	if !containsString(string(localData), "webdav-user") || !containsString(string(localData), "webdav-password") {
+		t.Fatalf("basic credentials must be written to local backup config: %s", localData)
+	}
+	configData, err := os.ReadFile(filepath.Join(appRoot, "config.yaml"))
+	if err == nil && (containsString(string(configData), "webdav-user") || containsString(string(configData), "webdav-password")) {
+		t.Fatal("basic credentials must not be written to config.yaml")
+	}
+
+	persistedConfig, err := config.Load(filepath.Join(appRoot, "config.yaml"))
+	if err != nil {
+		t.Fatalf("reload config: %v", err)
+	}
+	reloadedScheduler := newBackupScheduler(&App{appRoot: appRoot, config: persistedConfig})
+	if err := reloadedScheduler.loadLocalConfig(); err != nil {
+		t.Fatalf("reload local backup config: %v", err)
+	}
+	openList := reloadedScheduler.settings.Channels.OpenList
+	if openList.AuthMode != "basic" || openList.Username != "webdav-user" || openList.Password != "webdav-password" {
+		t.Fatalf("reloaded OpenList basic settings = %+v", openList)
 	}
 }
 

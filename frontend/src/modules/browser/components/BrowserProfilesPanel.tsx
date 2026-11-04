@@ -1,13 +1,18 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Link } from 'react-router-dom'
 import { Copy, Download, FolderOpen, Key, Loader2, MoreHorizontal, Play, Puzzle, Repeat2, RotateCcw, Settings, Square, Trash2, Wifi } from 'lucide-react'
 
-import { Badge, Button, Card, Table } from '../../../shared/components'
+import { Badge, Button, Card, Table, toast } from '../../../shared/components'
 import type { TableColumn } from '../../../shared/components/Table'
 
-import type { BrowserCore, BrowserProfile, BrowserProxy, ProxySpeedTestResult } from '../types'
-import { browserProxyTestSpeed, testProxyConnectivity } from '../api'
+import type { BrowserCore, BrowserProfile, BrowserProxy, BrowserProxyVirtualGroup, ProxySpeedTestResult } from '../types'
+import { testProxyConnectivity } from '../api'
+import { useProxySpeedFreshness } from '../proxySpeedFreshness'
+import { isProxySpeedResultFresh } from '../pages/proxyPool/storage'
+import { useProxySpeedStore } from '../proxySpeedStore'
+import { ensureProxySpeedListener, recordProxySpeedResult, testProxySpeedOnce } from '../proxySpeedService'
+import { EventsOn } from '../../../wailsjs/runtime/runtime'
 import type { BrowserViewMode } from './BrowserListLayout'
 import { KeywordInlineRow, LaunchCodeCell } from './BrowserListWidgets'
 
@@ -68,6 +73,7 @@ interface BrowserProfilesPanelProps {
   viewMode: BrowserViewMode
   profiles: BrowserProfile[]
   proxies: BrowserProxy[]
+  virtualGroups: BrowserProxyVirtualGroup[]
   selectedIds: Set<string>
   resolveProfileCore: (profile: BrowserProfile) => BrowserCore | null
   getProfileCoreLabel: (profile: BrowserProfile) => string
@@ -97,7 +103,62 @@ const formatTime = (value?: string) => {
   return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString('zh-CN')
 }
 
-function formatProxyLabel(profile: BrowserProfile, proxy?: BrowserProxy): string {
+const normalizeProxyKey = (value?: string) => (value || '').trim().toLowerCase()
+
+function isDynamicProfile(profile: BrowserProfile): boolean {
+  return normalizeProxyKey(profile.proxyMode) === 'dynamic'
+}
+
+function selectDynamicProxyCandidate(
+  profile: BrowserProfile,
+  proxies: BrowserProxy[],
+  virtualGroups: BrowserProxyVirtualGroup[],
+  now: number,
+  speedResultMaxAgeMs: number,
+): BrowserProxy | undefined {
+  const groupName = (profile.proxyGroupName || '').trim()
+  const virtualGroup = virtualGroups.find(group => normalizeProxyKey(group.groupName) === normalizeProxyKey(groupName))
+  const virtualMemberIds = virtualGroup
+    ? new Set([
+        ...(virtualGroup.memberProxyIds || []).map(proxyId => normalizeProxyKey(proxyId)).filter(Boolean),
+        ...proxies
+          .filter(proxy => (virtualGroup.memberGroupNames || []).some(memberGroupName => normalizeProxyKey(memberGroupName) === normalizeProxyKey(proxy.groupName)))
+          .map(proxy => normalizeProxyKey(proxy.proxyId))
+          .filter(Boolean),
+      ])
+    : null
+
+  const candidates = proxies.filter(proxy => {
+    const proxyId = normalizeProxyKey(proxy.proxyId)
+    if (!proxyId || normalizeProxyKey(proxy.proxyConfig) === 'direct://') return false
+    if (virtualMemberIds) {
+      if (!virtualMemberIds.has(proxyId)) return false
+    } else if (groupName && normalizeProxyKey(proxy.groupName) !== normalizeProxyKey(groupName)) {
+      return false
+    }
+    return proxy.lastTestOk === true
+      && typeof proxy.lastLatencyMs === 'number'
+      && proxy.lastLatencyMs >= 0
+      && isProxySpeedResultFresh(proxy.lastTestedAt, now, speedResultMaxAgeMs)
+  })
+
+  return [...candidates].sort((left, right) => {
+    const latencyDelta = (left.lastLatencyMs || 0) - (right.lastLatencyMs || 0)
+    if (latencyDelta !== 0) return latencyDelta
+    const sortOrderDelta = (left.sortOrder || 0) - (right.sortOrder || 0)
+    if (sortOrderDelta !== 0) return sortOrderDelta
+    return normalizeProxyKey(left.proxyId).localeCompare(normalizeProxyKey(right.proxyId))
+  })[0]
+}
+
+function formatProxyLabel(profile: BrowserProfile, proxy?: BrowserProxy, virtualGroups?: BrowserProxyVirtualGroup[]): string {
+  if (isDynamicProfile(profile)) {
+    return profile.proxyGroupName?.trim() ? `动态代理 · ${profile.proxyGroupName.trim()}` : '动态代理'
+  }
+  const boundVirtualGroup = (virtualGroups || []).find(group => group.groupId === profile.proxyId)
+  if (boundVirtualGroup) {
+    return `虚拟分组 · ${boundVirtualGroup.groupName}（${boundVirtualGroup.strategy === 'sticky' ? '保持' : '轮询'}）`
+  }
   if (proxy?.proxyName) {
     return proxy.proxyName
   }
@@ -112,7 +173,11 @@ function formatProxyLabel(profile: BrowserProfile, proxy?: BrowserProxy): string
 }
 
 function ProxyLatency({ result }: { result?: ProxySpeedTestResult | null }) {
-  if (!result) return null
+  // 不渲染空白：没有可展示的结果时明确显示“未测速”，
+  // 失败显示“失败”，避免“数据凭空消失”的观感。
+  if (!result) {
+    return <span className="text-[var(--color-text-muted)] text-xs">未测速</span>
+  }
   if (!result.ok) return <span className="text-xs text-red-500">失败</span>
   const color = result.latencyMs < 200 ? 'text-green-500' : result.latencyMs < 500 ? 'text-yellow-500' : 'text-red-500'
   return <span className={`text-xs font-medium ${color}`}>{result.latencyMs}ms</span>
@@ -121,52 +186,103 @@ function ProxyLatency({ result }: { result?: ProxySpeedTestResult | null }) {
 function ProxyInlineActions({
   profile,
   proxy,
+  proxies,
+  virtualGroups,
   isBusy,
   onOpenProxyPicker,
   maxWidthClass = 'max-w-[220px]',
+  now,
+  speedResultMaxAgeMs,
 }: {
   profile: BrowserProfile
   proxy?: BrowserProxy
+  proxies: BrowserProxy[]
+  virtualGroups: BrowserProxyVirtualGroup[]
   isBusy: boolean
   onOpenProxyPicker: (profile: BrowserProfile) => void
   maxWidthClass?: string
+  now: number
+  speedResultMaxAgeMs: number
 }) {
   const [testing, setTesting] = useState(false)
-  const [speedResult, setSpeedResult] = useState<ProxySpeedTestResult | null>(null)
-  const historyResult = proxy?.lastTestedAt
-    ? {
-        proxyId: proxy.proxyId,
-        ok: proxy.lastTestOk ?? false,
-        latencyMs: proxy.lastLatencyMs ?? -1,
-        error: '',
-      }
-    : null
-  const displayResult = speedResult || historyResult
-  const canTest = !!profile.proxyId || !!profile.proxyConfig.trim()
+  const speedResults = useProxySpeedStore((state) => state.results)
+  const isDynamic = isDynamicProfile(profile)
+  const dynamicProxy = useMemo(
+    () => isDynamic ? selectDynamicProxyCandidate(profile, proxies, virtualGroups, now, speedResultMaxAgeMs) : undefined,
+    [isDynamic, now, profile, proxies, speedResultMaxAgeMs, virtualGroups],
+  )
+  const speedTargetProxy = isDynamic ? dynamicProxy : proxy
+  const speedTargetProxyId = speedTargetProxy?.proxyId?.trim() || profile.proxyId.trim()
+  // 固定绑定虚拟分组：展示成员代理中最佳的测速结果（测速实际落在成员上）
+  const boundVirtualGroup = !isDynamic
+    ? virtualGroups.find(group => group.groupId === profile.proxyId)
+    : undefined
+  const virtualGroupMemberIds = useMemo(() => {
+    if (!boundVirtualGroup) return undefined
+    const ids = new Set<string>()
+    ;(boundVirtualGroup.memberProxyIds || []).forEach(proxyId => {
+      const key = proxyId.trim().toLowerCase()
+      if (key) ids.add(key)
+    })
+    const groupNames = new Set((boundVirtualGroup.memberGroupNames || []).map(name => name.trim().toLowerCase()).filter(Boolean))
+    if (groupNames.size > 0) {
+      proxies.forEach(item => {
+        if (groupNames.has((item.groupName || '').trim().toLowerCase())) {
+          ids.add(item.proxyId.trim().toLowerCase())
+        }
+      })
+    }
+    return ids
+  }, [boundVirtualGroup, proxies])
+  useEffect(() => {
+    useProxySpeedStore.getState().applyBackendResults(proxies, (testedAt) => isProxySpeedResultFresh(testedAt, now, speedResultMaxAgeMs))
+  }, [proxies, now, speedResultMaxAgeMs])
+  useEffect(() => {
+    ensureProxySpeedListener()
+  }, [])
+  const speedTargetKey = normalizeProxyKey(speedTargetProxyId)
+  const displayResult = useMemo(() => {
+    if (virtualGroupMemberIds) {
+      let best: (typeof speedResults)[string] | null = null
+      virtualGroupMemberIds.forEach(memberKey => {
+        const result = Object.values(speedResults).find(item => normalizeProxyKey(item.proxyId) === memberKey)
+        if (!result || !result.ok) return
+        if (!isProxySpeedResultFresh(result.testedAt, now, speedResultMaxAgeMs)) return
+        if (!best || result.latencyMs < best.latencyMs) best = result
+      })
+      return best
+    }
+    if (!speedTargetKey) return null
+    const exact = speedResults[speedTargetProxyId]
+    const match = exact || Object.values(speedResults).find((result) => normalizeProxyKey(result.proxyId) === speedTargetKey)
+    if (!match) return null
+    if (!isProxySpeedResultFresh(match.testedAt, now, speedResultMaxAgeMs)) return null
+    return match
+  }, [speedResults, speedTargetProxyId, speedTargetKey, virtualGroupMemberIds, now, speedResultMaxAgeMs])
+  const canTest = isDynamic
+    ? !!dynamicProxy
+    : !!profile.proxyId || !!profile.proxyConfig.trim()
 
   const handleTest = async () => {
     if (testing || !canTest) return
     setTesting(true)
     try {
-      const result = profile.proxyId
-        ? await browserProxyTestSpeed(profile.proxyId)
-        : await testProxyConnectivity(profile.profileId, profile.proxyConfig)
-      setSpeedResult(result)
-    } catch (error: any) {
-      setSpeedResult({
-        proxyId: profile.proxyId || profile.profileId,
-        ok: false,
-        latencyMs: -1,
-        error: error?.message || '测速失败',
-      })
+      if (isDynamic) {
+        await testProxySpeedOnce(dynamicProxy!.proxyId)
+      } else if (profile.proxyId) {
+        await testProxySpeedOnce(profile.proxyId)
+      } else {
+        const result = await testProxyConnectivity(profile.profileId, profile.proxyConfig)
+        recordProxySpeedResult({ ...result, proxyId: result.proxyId || speedTargetProxyId || profile.profileId })
+      }
     } finally {
       setTesting(false)
     }
   }
 
   return (
-    <div className={`inline-flex ${maxWidthClass} items-center gap-1.5 text-xs`} title={formatProxyLabel(profile, proxy)}>
-      <span className="min-w-0 truncate text-[var(--color-text-primary)]">{formatProxyLabel(profile, proxy)}</span>
+    <div className={`inline-flex ${maxWidthClass} items-center gap-1.5 text-xs`} title={formatProxyLabel(profile, proxy, virtualGroups)}>
+      <span className="min-w-0 truncate text-[var(--color-text-primary)]">{formatProxyLabel(profile, proxy, virtualGroups)}</span>
       <button
         type="button"
         className="shrink-0 rounded p-0.5 text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-bg-muted)] hover:text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-40"
@@ -179,7 +295,7 @@ function ProxyInlineActions({
       <button
         type="button"
         className="shrink-0 rounded p-0.5 text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-bg-muted)] hover:text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-40"
-        title={canTest ? '测速' : '无可测速代理'}
+        title={canTest ? (isDynamic ? '测速当前动态代理候选' : '测速') : (isDynamic ? '暂无有效动态代理候选' : '无可测速代理')}
         disabled={testing || !canTest}
         onClick={handleTest}
       >
@@ -323,6 +439,8 @@ function ProfileMoreActions({
 function BrowserProfileCard({
   profile,
   proxy,
+  proxies,
+  virtualGroups,
   isSelected,
   status,
   coreLabel,
@@ -339,9 +457,13 @@ function BrowserProfileCard({
   onOpenCopy,
   onOpenProxyPicker,
   onDelete,
+  now,
+  speedResultMaxAgeMs,
 }: {
   profile: BrowserProfile
   proxy: BrowserProxy | undefined
+  proxies: BrowserProxy[]
+  virtualGroups: BrowserProxyVirtualGroup[]
   isSelected: boolean
   status: ProfileStatus
   coreLabel: string
@@ -358,6 +480,8 @@ function BrowserProfileCard({
   onOpenCopy: (profile: BrowserProfile) => void
   onOpenProxyPicker: (profile: BrowserProfile) => void
   onDelete: (profileId: string) => void
+  now: number
+  speedResultMaxAgeMs: number
 }) {
   const markerCode = profile.running ? (profile.windowMarkerCode || '').trim().toUpperCase() : ''
 
@@ -425,9 +549,13 @@ function BrowserProfileCard({
           <ProxyInlineActions
             profile={profile}
             proxy={proxy}
+            proxies={proxies}
+            virtualGroups={virtualGroups}
             isBusy={isBusy}
             onOpenProxyPicker={onOpenProxyPicker}
             maxWidthClass="max-w-full"
+            now={now}
+            speedResultMaxAgeMs={speedResultMaxAgeMs}
           />
         </div>
         <div className="flex flex-col gap-0.5">
@@ -455,6 +583,7 @@ export function BrowserProfilesPanel({
   viewMode,
   profiles,
   proxies,
+  virtualGroups,
   selectedIds,
   resolveProfileCore,
   getProfileCoreLabel,
@@ -477,6 +606,23 @@ export function BrowserProfilesPanel({
   onOpenProxyPicker,
   onDelete,
 }: BrowserProfilesPanelProps) {
+  const { now, speedResultMaxAgeMs } = useProxySpeedFreshness()
+
+  // 安全控制：并发启动闸门的排队/放行反馈（事件由后端启动闸门发出）。
+  useEffect(() => {
+    const nameOf = (profileId?: string) =>
+      profiles.find(item => item.profileId === profileId)?.profileName || profileId || ''
+    const offQueued = EventsOn('instance:launch:queued', (payload: { profileId?: string; position?: number; limit?: number }) => {
+      toast.info(`实例「${nameOf(payload?.profileId)}」已进入启动队列（第 ${payload?.position || '-'} 位），等待空闲名额后自动启动`)
+    })
+    const offAdmitted = EventsOn('instance:launch:admitted', (payload: { profileId?: string }) => {
+      toast.success(`实例「${nameOf(payload?.profileId)}」已获得启动名额，开始启动`)
+    })
+    return () => {
+      offQueued?.()
+      offAdmitted?.()
+    }
+  }, [profiles])
   const allSelected = profiles.length > 0 && selectedIds.size === profiles.length
   const partiallySelected = selectedIds.size > 0 && selectedIds.size < profiles.length
   const [openMoreProfileId, setOpenMoreProfileId] = useState<string | null>(null)
@@ -557,7 +703,7 @@ export function BrowserProfilesPanel({
       render: (value, record) => {
         const proxy = proxies.find(item => item.proxyId === value)
         const isBusy = isProfileBusy(record.profileId)
-        return <ProxyInlineActions profile={record} proxy={proxy} isBusy={isBusy} onOpenProxyPicker={onOpenProxyPicker} />
+        return <ProxyInlineActions profile={record} proxy={proxy} proxies={proxies} virtualGroups={virtualGroups} isBusy={isBusy} onOpenProxyPicker={onOpenProxyPicker} now={now} speedResultMaxAgeMs={speedResultMaxAgeMs} />
       },
     },
     {
@@ -638,6 +784,8 @@ export function BrowserProfilesPanel({
               <BrowserProfileCard
                 profile={profile}
                 proxy={proxies.find(item => item.proxyId === profile.proxyId)}
+                proxies={proxies}
+                virtualGroups={virtualGroups}
                 isSelected={selectedIds.has(profile.profileId)}
                 status={getProfileStatus(profile)}
                 coreLabel={resolveProfileCore(profile)?.coreName || getProfileCoreLabel(profile)}
@@ -654,6 +802,8 @@ export function BrowserProfilesPanel({
                 onOpenCopy={onOpenCopy}
                 onOpenProxyPicker={onOpenProxyPicker}
                 onDelete={onDelete}
+                now={now}
+                speedResultMaxAgeMs={speedResultMaxAgeMs}
               />
             </div>
           ))}

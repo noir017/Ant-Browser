@@ -21,7 +21,7 @@ func (m *Manager) Create(input ProfileInput) (*Profile, error) {
 	if userDataDir == "" {
 		userDataDir = profileId
 	}
-	resolvedProxy, err := m.resolveProfileProxyInput(input.ProxyId, input.ProxyConfig)
+	resolvedProxy, err := m.resolveProfileProxyInput(input)
 	if err != nil {
 		log.Error("代理绑定失败", logger.F("profile_id", profileId), logger.F("proxy_id", strings.TrimSpace(input.ProxyId)), logger.F("error", err.Error()))
 		return nil, err
@@ -36,6 +36,7 @@ func (m *Manager) Create(input ProfileInput) (*Profile, error) {
 	if len(fingerprintArgs) == 0 && m.Config != nil {
 		fingerprintArgs = m.defaultFingerprintArgsForCore(coreId)
 	}
+	fingerprintArgs = m.upgradeLegacyMinimalFingerprintArgsForProfile(coreId, fingerprintArgs)
 	profile := &Profile{
 		ProfileId:          profileId,
 		ProfileName:        input.ProfileName,
@@ -43,8 +44,10 @@ func (m *Manager) Create(input ProfileInput) (*Profile, error) {
 		CoreId:             coreId,
 		RestoreLastSession: NormalizeRestoreLastSessionMode(input.RestoreLastSession),
 		FingerprintArgs:    fingerprintArgs,
+		ProxyMode:          resolvedProxy.ProxyMode,
 		ProxyId:            resolvedProxy.ProxyId,
 		ProxyConfig:        resolvedProxy.ProxyConfig,
+		ProxyGroupName:     resolvedProxy.ProxyGroupName,
 		MemoryLimitMB:      normalizeMemoryLimitMB(input.MemoryLimitMB),
 		LaunchArgs:         input.LaunchArgs,
 		Tags:               input.Tags,
@@ -61,12 +64,6 @@ func (m *Manager) Create(input ProfileInput) (*Profile, error) {
 		_ = BindProfileToProxy(profile, resolvedProxy.SelectedProxy, true)
 	} else if resolvedProxy.FallbackToDirect {
 		_ = m.bindProfileToDirectProxy(profile)
-	}
-	if resolvedProxy.UsedConfigFallback {
-		log.Warn("代理ID未命中，已改为使用输入的代理配置",
-			logger.F("profile_id", profileId),
-			logger.F("proxy_id", strings.TrimSpace(input.ProxyId)),
-		)
 	}
 	m.Profiles[profileId] = profile
 	log.Info("浏览器配置创建", logger.F("profile_id", profileId), logger.F("profile_name", input.ProfileName))

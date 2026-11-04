@@ -5,8 +5,10 @@
   coreId: string
   restoreLastSession?: '' | 'enabled' | 'disabled' | string
   fingerprintArgs: string[]
+  proxyMode?: 'fixed' | 'dynamic' | 'local' | string
   proxyId: string
   proxyConfig: string
+  proxyGroupName?: string
   proxyBindSourceId?: string
   proxyBindSourceUrl?: string
   proxyBindName?: string
@@ -38,8 +40,10 @@ export interface BrowserProfileInput {
   coreId: string
   restoreLastSession?: '' | 'enabled' | 'disabled' | string
   fingerprintArgs: string[]
+  proxyMode?: 'fixed' | 'dynamic' | 'local' | string
   proxyId: string
   proxyConfig: string
+  proxyGroupName?: string
   memoryLimitMb: number
   launchArgs: string[]
   tags: string[]
@@ -136,6 +140,8 @@ export interface BrowserProfilePackageExportResult {
   zipPath: string
   profileCount: number
   fileCount: number
+  portableSessionProfileCount?: number
+  portableSessionWarning?: string
   message: string
 }
 
@@ -199,6 +205,8 @@ export interface BrowserProfilePackageImportPreview {
   canOverwrite: boolean
   profiles: BrowserProfilePackageImportPreviewProfile[]
   conflicts: BrowserProfilePackageImportConflict[]
+  portableSessionAvailable?: boolean
+  portableSessionProfileCount?: number
   message: string
 }
 
@@ -227,6 +235,21 @@ export interface BrowserTab {
   active: boolean
 }
 
+// 安全控制/订阅对齐：后端记录的对齐明细（刷新自动对齐与对齐工作台共用）
+export interface SourceAlignPair {
+  oldName: string
+  newName: string
+  match: string // name / endpoint / country
+}
+
+export interface SourceAlignRecord {
+  at: string
+  mode: string // auto = 刷新自动对齐 / manual = 对齐工作台
+  pairs?: SourceAlignPair[]
+  added: number
+  keptMissing: number
+}
+
 export interface BrowserSettings {
   userDataRoot: string
   defaultFingerprintArgs: string[]
@@ -236,6 +259,8 @@ export interface BrowserSettings {
   restoreLastSession: boolean
   startReadyTimeoutMs: number
   startStableWindowMs: number
+  /** 同时运行实例数上限；0 = 不限制，超出后启动请求排队等待空闲名额 */
+  maxConcurrentInstances: number
   // xray 表示 Xray + sing-box 组合连接栈；mihomo 表示独立 Mihomo 连接栈。
   defaultConnectorType: 'xray' | 'mihomo' | string
 }
@@ -252,6 +277,9 @@ export interface ProxyCheckTarget {
 
 export interface ProxyCheckSettings {
   bridgeStartTimeoutMs: number
+  speedIntervalMinutes: number
+  failureRetryMinutes: number
+  speedConcurrency: number
   speedTargetId: string
   ipHealthTargetId: string
   targets: ProxyCheckTarget[]
@@ -290,16 +318,91 @@ export interface BrowserProxy {
   preferredKernel?: 'auto' | 'xray' | 'sing-box' | 'mihomo' | string
   dnsServers?: string
   groupName?: string
+  sortOrder?: number
   sourceId?: string
   sourceUrl?: string
   sourceNamePrefix?: string
   sourceAutoRefresh?: boolean
   sourceRefreshIntervalM?: number
   sourceLastRefreshAt?: string
+  /** 该订阅源拉取订阅内容时使用的代理（导入时选定并持久化，刷新时复用；空为直连） */
+  sourceFetchProxyId?: string
+  /** 最近一次订阅刷新失败的错误信息（成功刷新后由后端清空） */
+  sourceLastRefreshError?: string
+  /** 订阅刷新后该节点已不在来源列表中（名称/国家都匹配不上），保留在池内但标记异常 */
+  sourceMissing?: boolean
+  sourceMissingSince?: string
   lastLatencyMs?: number
   lastTestOk?: boolean
-  lastTestedAt?: string
+lastTestedAt?: string
+  speedTestFingerprint?: string
+  lastTestEngine?: string
+  lastTestConnectorType?: string
   lastIPHealthJson?: string
+}
+
+/** 订阅源刷新结果（后端统一匹配逻辑：名称 → 同国家 → 标记异常） */
+export interface ProxySourceRefreshResult {
+  sourceId: string
+  sourceUrl: string
+  fetched: number
+  nameMatched: number
+  countryMatched: number
+  added: number
+  markedMissing: number
+  total: number
+}
+
+export interface BrowserProxyVirtualGroup {
+  groupId: string
+  groupName: string
+  strategy: 'round_robin' | 'sticky' | string
+  /** 当前实际使用的成员（降级切换会改写它） */
+  selectedProxyId?: string
+  /** 用户偏好节点，降级切换不改写，恢复后用于回切 */
+  preferredProxyId?: string
+  memberProxyIds: string[]
+  memberGroupNames?: string[]
+  sortOrder?: number
+  createdAt?: string
+  updatedAt?: string
+}
+
+export type ProxyVirtualGroupMemberState = 'unknown' | 'healthy' | 'suspect' | 'degraded' | 'recovering'
+
+export interface ProxyVirtualGroupMemberHealth {
+  proxyId: string
+  proxyName?: string
+  groupName?: string
+  state: ProxyVirtualGroupMemberState | string
+  latencyMs: number
+  lastProbeAt?: string
+  lastError?: string
+  active?: boolean
+  preferred?: boolean
+}
+
+export interface ProxyVirtualGroupHealth {
+  groupId: string
+  groupName: string
+  strategy: string
+  activeProxyId?: string
+  preferredProxyId?: string
+  total: number
+  healthy: number
+  suspect: number
+  degraded: number
+  /** 全组成员均已降级，启动会被拒绝 */
+  allDegraded: boolean
+  members: ProxyVirtualGroupMemberHealth[]
+  updatedAt?: string
+}
+
+export interface ProxyVirtualGroupProbeResult {
+  groupId: string
+  tested: number
+  healthy: number
+  degraded: number
 }
 
 export interface ProxyIPHealthResult {
@@ -370,6 +473,8 @@ export interface ProxySpeedTestResult {
   latencyMs: number
   engine?: string
   error: string
+  testedAt?: string
+  fingerprint?: string
 }
 
 

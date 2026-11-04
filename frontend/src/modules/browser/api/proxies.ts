@@ -1,5 +1,50 @@
-﻿import type { BrowserProxy, ProxyBridgeWarmupResult, ProxyCoreDownloadInfoResult, ProxyCoreStatusResult, ProxyIPHealthResult, ProxyLocationResolveResult, ProxySpeedTestResult } from '../types'
+﻿import type { BrowserProxy, ProxyBridgeWarmupResult, ProxyCoreDownloadInfoResult, ProxyCoreStatusResult, ProxyIPHealthResult, ProxyLocationResolveResult, ProxySourceRefreshResult, ProxySpeedTestResult, ProxyVirtualGroupHealth, ProxyVirtualGroupProbeResult, SourceAlignRecord } from '../types'
 import { getBindings, getGoApp, getMockProxies, nowISOString, setMockProxies } from './runtime'
+
+import type { BrowserProxyVirtualGroup } from '../types'
+
+let mockProxyVirtualGroups: BrowserProxyVirtualGroup[] = []
+
+function normalizeBrowserProxyVirtualGroup(value: unknown): BrowserProxyVirtualGroup | null {
+  if (!value || typeof value !== 'object') return null
+  const source = value as Record<string, unknown>
+  return {
+    groupId: typeof source.groupId === 'string' ? source.groupId.trim() : '',
+    groupName: typeof source.groupName === 'string' ? source.groupName.trim() : '',
+    strategy: source.strategy === 'sticky' ? 'sticky' : 'round_robin',
+    selectedProxyId: typeof source.selectedProxyId === 'string' ? source.selectedProxyId.trim() : '',
+    preferredProxyId: typeof source.preferredProxyId === 'string' ? source.preferredProxyId.trim() : '',
+    memberProxyIds: Array.isArray(source.memberProxyIds)
+      ? source.memberProxyIds.filter((item): item is string => typeof item === 'string').map(item => item.trim()).filter(Boolean)
+      : [],
+    memberGroupNames: Array.isArray(source.memberGroupNames)
+      ? source.memberGroupNames.filter((item): item is string => typeof item === 'string').map(item => item.trim()).filter(Boolean)
+      : [],
+    sortOrder: typeof source.sortOrder === 'number' ? source.sortOrder : 0,
+    createdAt: typeof source.createdAt === 'string' ? source.createdAt : undefined,
+    updatedAt: typeof source.updatedAt === 'string' ? source.updatedAt : undefined,
+  }
+}
+
+function normalizeBrowserProxyVirtualGroups(value: unknown): BrowserProxyVirtualGroup[] {
+  if (!Array.isArray(value)) return []
+  return value.map(normalizeBrowserProxyVirtualGroup).filter((item): item is BrowserProxyVirtualGroup => item !== null)
+}
+
+/** 读取订阅源的对齐记录（最新在前；后端随 config.yaml 持久化） */
+export async function fetchSourceAlignRecords(sourceId: string): Promise<SourceAlignRecord[]> {
+  const bindings: any = await getBindings()
+  const trimmed = sourceId.trim()
+  if (!trimmed) return []
+  if (bindings?.BrowserProxyAlignRecords) {
+    return (await bindings.BrowserProxyAlignRecords(trimmed)) || []
+  }
+  const goApp = getGoApp()
+  if (goApp?.BrowserProxyAlignRecords) {
+    return (await goApp.BrowserProxyAlignRecords(trimmed)) || []
+  }
+  return []
+}
 
 export interface ClashImportURLResult {
   url: string
@@ -13,10 +58,45 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+const BACKEND_STARTUP_RETRY_DELAYS_MS = [100, 250, 500, 1000, 2000]
+
+function errorMessage(value: unknown): string {
+  if (value instanceof Error) return value.message
+  if (typeof value === 'string') return value
+  if (!value || typeof value !== 'object') return String(value)
+
+  const source = value as Record<string, unknown>
+  for (const key of ['message', 'error', 'detail']) {
+    if (typeof source[key] === 'string') return source[key] as string
+  }
+  return String(value)
+}
+
+function isBackendStartupError(value: unknown): boolean {
+  const message = errorMessage(value)
+  return message.includes('代理数据加载上下文不可用')
+    || message.includes('应用未初始化')
+    || message.includes('应用上下文未初始化')
+}
+
+async function withBackendStartupRetry<T>(operation: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await operation()
+    } catch (error) {
+      const delay = BACKEND_STARTUP_RETRY_DELAYS_MS[attempt]
+      if (!isBackendStartupError(error) || delay === undefined) {
+        throw error
+      }
+      await sleep(delay)
+    }
+  }
+}
+
 export async function fetchBrowserProxies(): Promise<BrowserProxy[]> {
   const bindings: any = await getBindings()
   if (bindings?.BrowserProxyList) {
-    return (await bindings.BrowserProxyList()) || []
+    return (await withBackendStartupRetry(() => bindings.BrowserProxyList())) || []
   }
   return getMockProxies()
 }
@@ -24,9 +104,91 @@ export async function fetchBrowserProxies(): Promise<BrowserProxy[]> {
 export async function fetchBrowserProxyGroups(): Promise<string[]> {
   const bindings: any = await getBindings()
   if (bindings?.BrowserProxyListGroups) {
-    return (await bindings.BrowserProxyListGroups()) || []
+    return (await withBackendStartupRetry(() => bindings.BrowserProxyListGroups())) || []
   }
   return []
+}
+
+export async function fetchBrowserProxyVirtualGroups(): Promise<BrowserProxyVirtualGroup[]> {
+  const bindings: any = await getBindings()
+  if (bindings?.BrowserProxyVirtualGroupList) {
+    return normalizeBrowserProxyVirtualGroups(
+      await withBackendStartupRetry(() => bindings.BrowserProxyVirtualGroupList()),
+    )
+  }
+  const goApp = getGoApp()
+  if (goApp?.BrowserProxyVirtualGroupList) {
+    return normalizeBrowserProxyVirtualGroups(
+      await withBackendStartupRetry(() => goApp.BrowserProxyVirtualGroupList()),
+    )
+  }
+  return normalizeBrowserProxyVirtualGroups(mockProxyVirtualGroups)
+}
+
+export async function fetchBrowserProxyVirtualGroupHealth(): Promise<ProxyVirtualGroupHealth[]> {
+  const bindings: any = await getBindings()
+  if (bindings?.BrowserProxyVirtualGroupHealthList) {
+    const list = await withBackendStartupRetry(() => bindings.BrowserProxyVirtualGroupHealthList())
+    return Array.isArray(list) ? (list as ProxyVirtualGroupHealth[]) : []
+  }
+  return []
+}
+
+export async function probeBrowserProxyVirtualGroup(groupId: string): Promise<ProxyVirtualGroupProbeResult | null> {
+  const bindings: any = await getBindings()
+  if (bindings?.BrowserProxyVirtualGroupProbe) {
+    return (await bindings.BrowserProxyVirtualGroupProbe(groupId)) as ProxyVirtualGroupProbeResult
+  }
+  return null
+}
+
+export async function resetBrowserProxyVirtualGroupHealth(groupId: string): Promise<boolean> {
+  const bindings: any = await getBindings()
+  if (bindings?.BrowserProxyVirtualGroupResetHealth) {
+    await bindings.BrowserProxyVirtualGroupResetHealth(groupId)
+    return true
+  }
+  return false
+}
+
+export async function saveBrowserProxyVirtualGroup(group: BrowserProxyVirtualGroup): Promise<boolean> {
+  const bindings: any = await getBindings()
+  if (bindings?.SaveBrowserProxyVirtualGroup) {
+    await bindings.SaveBrowserProxyVirtualGroup(group)
+    return true
+  }
+  const goApp = getGoApp()
+  if (goApp?.SaveBrowserProxyVirtualGroup) {
+    await goApp.SaveBrowserProxyVirtualGroup(group)
+    return true
+  }
+  const nextGroup = {
+    ...group,
+    groupId: group.groupId || `virtual-${Date.now()}`,
+    strategy: group.strategy === 'sticky' ? 'sticky' : 'round_robin',
+    selectedProxyId: group.strategy === 'sticky' ? (group.selectedProxyId || '').trim() : '',
+    memberProxyIds: group.memberProxyIds.map(proxyId => proxyId.trim()).filter(Boolean),
+  }
+  const existingIndex = mockProxyVirtualGroups.findIndex(item => item.groupId === nextGroup.groupId)
+  mockProxyVirtualGroups = existingIndex < 0
+    ? [...mockProxyVirtualGroups, nextGroup]
+    : mockProxyVirtualGroups.map((item, index) => index === existingIndex ? nextGroup : item)
+  return true
+}
+
+export async function deleteBrowserProxyVirtualGroup(groupId: string): Promise<boolean> {
+  const bindings: any = await getBindings()
+  if (bindings?.DeleteBrowserProxyVirtualGroup) {
+    await bindings.DeleteBrowserProxyVirtualGroup(groupId)
+    return true
+  }
+  const goApp = getGoApp()
+  if (goApp?.DeleteBrowserProxyVirtualGroup) {
+    await goApp.DeleteBrowserProxyVirtualGroup(groupId)
+    return true
+  }
+  mockProxyVirtualGroups = mockProxyVirtualGroups.filter(group => group.groupId !== groupId)
+  return true
 }
 
 export async function fetchBrowserProxiesByGroup(groupName: string): Promise<BrowserProxy[]> {
@@ -90,6 +252,64 @@ export async function saveBrowserProxies(proxies: BrowserProxy[]): Promise<boole
   }
   setMockProxies(proxies)
   return true
+}
+
+/** 刷新订阅源：后端统一匹配（名称 → 同国家 → 标记异常），与定时刷新同一条链路 */
+export async function refreshProxySource(sourceId: string, proxyId = ''): Promise<ProxySourceRefreshResult> {
+  const bindings: any = await getBindings()
+  const trimmedSourceId = sourceId.trim()
+  const trimmedProxyId = proxyId.trim()
+  const emptyResult: ProxySourceRefreshResult = {
+    sourceId: trimmedSourceId, sourceUrl: '', fetched: 0, nameMatched: 0,
+    countryMatched: 0, added: 0, markedMissing: 0, total: 0,
+  }
+  if (bindings?.BrowserProxyRefreshSource) {
+    return (await bindings.BrowserProxyRefreshSource(trimmedSourceId, trimmedProxyId)) || emptyResult
+  }
+  const goApp = getGoApp()
+  if (goApp?.BrowserProxyRefreshSource) {
+    return (await goApp.BrowserProxyRefreshSource(trimmedSourceId, trimmedProxyId)) || emptyResult
+  }
+  throw new Error('当前环境不支持订阅刷新')
+}
+
+/** 更新订阅源配置（自动更新开关/间隔/拉取代理），按 sourceId 批量落到该源所有行 */
+export async function updateProxySourceConfig(
+  sourceId: string,
+  autoRefresh: boolean,
+  intervalM: number,
+  fetchProxyId: string,
+): Promise<boolean> {
+  const bindings: any = await getBindings()
+  const trimmedSourceId = sourceId.trim()
+  if (!trimmedSourceId) throw new Error('订阅源 ID 不能为空')
+  if (bindings?.BrowserProxyUpdateSourceConfig) {
+    await bindings.BrowserProxyUpdateSourceConfig(trimmedSourceId, autoRefresh, intervalM, fetchProxyId.trim())
+    return true
+  }
+  const goApp = getGoApp()
+  if (goApp?.BrowserProxyUpdateSourceConfig) {
+    await goApp.BrowserProxyUpdateSourceConfig(trimmedSourceId, autoRefresh, intervalM, fetchProxyId.trim())
+    return true
+  }
+  throw new Error('当前环境不支持订阅源配置编辑')
+}
+
+/** 持久化订阅源忽略名单（导入预览取消勾选的节点），定时刷新不再导入它们 */
+export async function setSourceIgnoredProxyNames(sourceId: string, names: string[]): Promise<boolean> {
+  const bindings: any = await getBindings()
+  const trimmedSourceId = sourceId.trim()
+  if (!trimmedSourceId) return false
+  if (bindings?.BrowserProxySetSourceIgnoredNames) {
+    await bindings.BrowserProxySetSourceIgnoredNames(trimmedSourceId, names)
+    return true
+  }
+  const goApp = getGoApp()
+  if (goApp?.BrowserProxySetSourceIgnoredNames) {
+    await goApp.BrowserProxySetSourceIgnoredNames(trimmedSourceId, names)
+    return true
+  }
+  return false
 }
 
 export async function validateProxyConfig(proxyConfig: string, proxyId: string): Promise<{ supported: boolean; errorMsg: string }> {

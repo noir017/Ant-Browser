@@ -18,9 +18,12 @@ import {
   type BrowserExtensionManualInstallGuide,
 } from '../api/extensions'
 import { fetchBrowserProxies } from '../api/proxies'
+import { useProxySpeedStore } from '../proxySpeedStore'
+import { isProxySpeedResultFresh } from './proxyPool/storage'
 import { ProxyPickerModal } from '../components/ProxyPickerModal'
 import { ExtensionInstallCard, ExtensionManagementHeader, InstalledExtensionsList } from './ExtensionManagementCards'
 import { DownloadDirectoryInstallModal, ExtensionHistoryModal, ExtensionProfileLimitModal, ManualInstallModal } from './ExtensionManagementModals'
+import { ExtensionInstalledProfilesModal } from './ExtensionInstalledProfilesModal'
 import { EXTENSION_HISTORY_LIMIT, buildChromeWebStoreQueryURL, createExtensionHistoryRecord, extensionStoreURL, loadExtensionDownloadProxyPreference, loadExtensionHistory, saveExtensionDownloadProxyPreference, saveExtensionHistory, type ExtensionHistoryRecord } from './extensionManagementUtils'
 
 export function ExtensionManagementPage() {
@@ -49,6 +52,7 @@ export function ExtensionManagementPage() {
   const [downloadDirOpen, setDownloadDirOpen] = useState(false)
   const [lastLookupProxyLabel, setLastLookupProxyLabel] = useState('')
   const [limitExtension, setLimitExtension] = useState<BrowserExtension | null>(null)
+  const [installedProfilesExtension, setInstalledProfilesExtension] = useState<BrowserExtension | null>(null)
 
   const installedIds = useMemo(() => new Set(items.map((item) => item.extensionId)), [items])
   const selectedProxy = useMemo(
@@ -90,6 +94,10 @@ export function ExtensionManagementPage() {
       setProxies([])
     })
   }, [])
+
+  useEffect(() => {
+    useProxySpeedStore.getState().applyBackendResults(proxies, (testedAt) => isProxySpeedResultFresh(testedAt))
+  }, [proxies])
 
   const appendHistory = (input: Omit<ExtensionHistoryRecord, 'id' | 'createdAt'>) => {
     const record = createExtensionHistoryRecord(input)
@@ -363,12 +371,16 @@ export function ExtensionManagementPage() {
   }
 
   const handleToggle = async (item: BrowserExtension) => {
+    const nextEnabled = !item.enabled
     setBusyId(item.extensionId)
     setBusyAction('toggle')
+    // 先本地切换，避免等待接口期间状态不动。
+    setItems((current) => current.map((entry) => entry.extensionId === item.extensionId ? { ...entry, enabled: nextEnabled } : entry))
     try {
-      const updated = await setBrowserExtensionEnabled(item.extensionId, !item.enabled)
+      const updated = await setBrowserExtensionEnabled(item.extensionId, nextEnabled)
       setItems((current) => current.map((entry) => entry.extensionId === updated.extensionId ? updated : entry))
     } catch (error: any) {
+      setItems((current) => current.map((entry) => entry.extensionId === item.extensionId ? { ...entry, enabled: item.enabled } : entry))
       toast.error(error?.message || '更新插件状态失败')
     } finally {
       setBusyId('')
@@ -393,13 +405,16 @@ export function ExtensionManagementPage() {
   }
 
   const handleDefaultInstallToggle = async (item: BrowserExtension) => {
+    const nextDefault = !item.defaultInstall
     setBusyId(item.extensionId)
     setBusyAction('default')
+    setItems((current) => current.map((entry) => entry.extensionId === item.extensionId ? { ...entry, defaultInstall: nextDefault } : entry))
     try {
-      const updated = await setBrowserExtensionDefaultInstall(item.extensionId, !item.defaultInstall)
+      const updated = await setBrowserExtensionDefaultInstall(item.extensionId, nextDefault)
       setItems((current) => current.map((entry) => entry.extensionId === updated.extensionId ? updated : entry))
       toast.success(updated.defaultInstall ? '已开启默认安装，未单独配置的实例下次启动会安装' : '已关闭默认安装，未单独配置的实例下次启动会移除')
     } catch (error: any) {
+      setItems((current) => current.map((entry) => entry.extensionId === item.extensionId ? { ...entry, defaultInstall: item.defaultInstall } : entry))
       toast.error(error?.message || '更新默认安装状态失败')
     } finally {
       setBusyId('')
@@ -467,10 +482,16 @@ export function ExtensionManagementPage() {
           }
         }}
         onProxyTested={(proxyId, result) => {
-          const testedAt = new Date().toISOString()
+          const testedAt = result.testedAt || new Date().toISOString()
           setProxies((current) => current.map((proxy) => (
             proxy.proxyId === proxyId
-              ? { ...proxy, lastTestOk: result.ok, lastLatencyMs: result.ok ? result.latencyMs : -1, lastTestedAt: testedAt }
+              ? {
+                  ...proxy,
+                  lastTestOk: result.ok,
+                  lastLatencyMs: result.ok ? result.latencyMs : -1,
+                  lastTestedAt: testedAt,
+                  speedTestFingerprint: result.fingerprint || proxy.speedTestFingerprint,
+                }
               : proxy
           )))
         }}
@@ -489,6 +510,12 @@ export function ExtensionManagementPage() {
         extension={limitExtension}
         allExtensions={items}
         onClose={() => setLimitExtension(null)}
+      />
+
+      <ExtensionInstalledProfilesModal
+        open={!!installedProfilesExtension}
+        extension={installedProfilesExtension}
+        onClose={() => setInstalledProfilesExtension(null)}
       />
 
       <ManualInstallModal
@@ -542,6 +569,7 @@ export function ExtensionManagementPage() {
         busyAction={busyAction}
         updatingId={updatingId}
         onRestrictProfiles={setLimitExtension}
+        onShowProfiles={setInstalledProfilesExtension}
         onDefaultInstallToggle={(target) => void handleDefaultInstallToggle(target)}
         onUpdate={(target) => void handleUpdateExtension(target)}
         onToggle={(target) => void handleToggle(target)}

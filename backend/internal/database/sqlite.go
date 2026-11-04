@@ -260,9 +260,137 @@ var migrations = []migration{
 		},
 	},
 	{
-		// 注意：15/16/17 已被历史插件相关迁移占用（部分用户库里已记录），
-		// 这里从 18 开始，避免版本号撞车导致本迁移被当成"已执行"而跳过。
-		version: 18,
+		version: 24,
+		desc:    "添加实例代理模式与代理池分组字段",
+		stmts: []string{
+			`ALTER TABLE browser_profiles ADD COLUMN proxy_mode TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE browser_profiles ADD COLUMN proxy_group_name TEXT NOT NULL DEFAULT ''`,
+		},
+	},
+	{
+		version: 25,
+		desc:    "添加代理虚拟连接分组及成员选择策略",
+		stmts: []string{
+			`CREATE TABLE IF NOT EXISTS browser_proxy_virtual_groups (
+				group_id           TEXT PRIMARY KEY,
+				group_name         TEXT NOT NULL COLLATE NOCASE UNIQUE,
+				strategy           TEXT NOT NULL DEFAULT 'round_robin',
+				selected_proxy_id  TEXT NOT NULL DEFAULT '',
+				member_proxy_ids   TEXT NOT NULL DEFAULT '[]',
+				member_group_names TEXT NOT NULL DEFAULT '[]',
+				sort_order         INTEGER NOT NULL DEFAULT 0,
+				created_at         TEXT NOT NULL DEFAULT '',
+				updated_at         TEXT NOT NULL DEFAULT ''
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_browser_proxy_virtual_groups_sort_order ON browser_proxy_virtual_groups(sort_order, group_name)`,
+		},
+	},
+	{
+		version: 26,
+		desc:    "记录代理测速来源与配置指纹",
+		stmts: []string{
+			`ALTER TABLE browser_proxies ADD COLUMN last_test_engine TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE browser_proxies ADD COLUMN last_test_connector_type TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE browser_proxies ADD COLUMN last_test_fingerprint TEXT NOT NULL DEFAULT ''`,
+		},
+	},
+	{
+		version: 27,
+		desc:    "记录已删除书签，避免备份导入复活",
+		stmts: []string{
+			`CREATE TABLE IF NOT EXISTS browser_bookmark_deletions (
+				url        TEXT PRIMARY KEY NOT NULL,
+				deleted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+			)`,
+		},
+	},
+	{
+		version: 28,
+		desc:    "修复跨分支数据库缺失字段",
+		stmts: []string{
+			`ALTER TABLE browser_profiles ADD COLUMN runtime_type TEXT NOT NULL DEFAULT 'desktop_chromium'`,
+			`ALTER TABLE browser_profiles ADD COLUMN runtime_config_json TEXT NOT NULL DEFAULT '{}'`,
+			`ALTER TABLE browser_profiles ADD COLUMN proxy_mode TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE browser_profiles ADD COLUMN proxy_group_name TEXT NOT NULL DEFAULT ''`,
+			`CREATE TABLE IF NOT EXISTS browser_proxy_virtual_groups (
+				group_id           TEXT PRIMARY KEY,
+				group_name         TEXT NOT NULL COLLATE NOCASE UNIQUE,
+				strategy           TEXT NOT NULL DEFAULT 'round_robin',
+				selected_proxy_id  TEXT NOT NULL DEFAULT '',
+				member_proxy_ids   TEXT NOT NULL DEFAULT '[]',
+				member_group_names TEXT NOT NULL DEFAULT '[]',
+				sort_order         INTEGER NOT NULL DEFAULT 0,
+				created_at         TEXT NOT NULL DEFAULT '',
+				updated_at         TEXT NOT NULL DEFAULT ''
+			)`,
+			`ALTER TABLE browser_proxy_virtual_groups ADD COLUMN strategy TEXT NOT NULL DEFAULT 'round_robin'`,
+			`ALTER TABLE browser_proxy_virtual_groups ADD COLUMN selected_proxy_id TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE browser_proxy_virtual_groups ADD COLUMN member_proxy_ids TEXT NOT NULL DEFAULT '[]'`,
+			`ALTER TABLE browser_proxy_virtual_groups ADD COLUMN member_group_names TEXT NOT NULL DEFAULT '[]'`,
+			`ALTER TABLE browser_proxy_virtual_groups ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE browser_proxy_virtual_groups ADD COLUMN created_at TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE browser_proxy_virtual_groups ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''`,
+			`CREATE INDEX IF NOT EXISTS idx_browser_proxy_virtual_groups_sort_order ON browser_proxy_virtual_groups(sort_order, group_name)`,
+		},
+	},
+	{
+		version: 29,
+		desc:    "添加虚拟分组健康状态与偏好节点",
+		stmts: []string{
+			`ALTER TABLE browser_proxy_virtual_groups ADD COLUMN preferred_proxy_id TEXT NOT NULL DEFAULT ''`,
+			`CREATE TABLE IF NOT EXISTS browser_proxy_virtual_group_member_state (
+				group_id              TEXT NOT NULL,
+				proxy_id              TEXT NOT NULL,
+				state                 TEXT NOT NULL DEFAULT 'unknown',
+				consecutive_failures  INTEGER NOT NULL DEFAULT 0,
+				consecutive_successes INTEGER NOT NULL DEFAULT 0,
+				last_probe_at         TEXT NOT NULL DEFAULT '',
+				last_success_at       TEXT NOT NULL DEFAULT '',
+				last_failure_at       TEXT NOT NULL DEFAULT '',
+				next_probe_at         TEXT NOT NULL DEFAULT '',
+				last_error            TEXT NOT NULL DEFAULT '',
+				last_engine           TEXT NOT NULL DEFAULT '',
+				last_connector_type   TEXT NOT NULL DEFAULT '',
+				updated_at            TEXT NOT NULL DEFAULT '',
+				PRIMARY KEY (group_id, proxy_id)
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_vgm_state_group_state ON browser_proxy_virtual_group_member_state(group_id, state)`,
+		},
+	},
+	{
+		version: 30,
+		desc:    "清理不含任何插件的手动实例插件配置",
+		stmts: []string{
+			// 「手动设置」却一个插件都没绑，是空列表，不承载任何意图，
+			// 等价于没有手动配置。留着会让该实例永久无法跟随「默认安装」。
+			`DELETE FROM browser_profile_extension_settings
+			 WHERE configured = 1
+			   AND NOT EXISTS (
+			     SELECT 1 FROM browser_profile_extensions b
+			     WHERE b.profile_id = browser_profile_extension_settings.profile_id
+			   )`,
+		},
+	},
+	{
+		version: 31,
+		desc:    "代理订阅刷新：标记已从来源消失的节点",
+		stmts: []string{
+			`ALTER TABLE browser_proxies ADD COLUMN source_missing INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE browser_proxies ADD COLUMN source_missing_since TEXT NOT NULL DEFAULT ''`,
+		},
+	},
+	{
+		version: 32,
+		desc:    "代理订阅刷新：持久化每源的拉取代理与最近一次刷新失败原因",
+		stmts: []string{
+			`ALTER TABLE browser_proxies ADD COLUMN source_fetch_proxy_id TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE browser_proxies ADD COLUMN source_last_refresh_error TEXT NOT NULL DEFAULT ''`,
+		},
+	},
+	{
+		// 18-23 被上游 feature 分支占用，这里取主线下一个号。
+		// 版本号撞车被跳过时，由启动期 Reconcile 按本迁移语句补齐新增列。
+		version: 33,
 		desc:    "内核表添加后端类型与环境变量字段",
 		stmts: []string{
 			`ALTER TABLE browser_cores ADD COLUMN core_backend TEXT NOT NULL DEFAULT ''`,
@@ -350,14 +478,6 @@ func (db *DB) Migrate() error {
 		}
 	}
 
-	// 版本水位（MAX(version)）只能反映"最大版本号"，无法反映"某个版本是否真的执行过"。
-	// 如果历史构建用过相同的版本号（分支合并、不同分发版本各自追加迁移），
-	// 新迁移会被当成已执行而静默跳过，之后代码引用新列就会报 "no such column"。
-	// 这里对纯新增列的迁移做一次补齐，保证 schema 与代码期望一致。
-	if err := db.ensureExpectedColumns(); err != nil {
-		return err
-	}
-
 	return nil
 }
 
@@ -378,66 +498,6 @@ func (db *DB) appliedMigrationVersions() (map[int]bool, error) {
 		applied[version] = true
 	}
 	return applied, rows.Err()
-}
-
-// expectedColumn 描述代码依赖的新增列，用于修复版本号撞车导致的漏执行。
-type expectedColumn struct {
-	table      string
-	column     string
-	definition string
-}
-
-// expectedColumns 只允许放"可安全重复添加的新增列"（带默认值、不改变已有语义）。
-var expectedColumns = []expectedColumn{
-	{table: "browser_cores", column: "core_backend", definition: `TEXT NOT NULL DEFAULT ''`},
-	{table: "browser_cores", column: "core_env", definition: `TEXT NOT NULL DEFAULT '[]'`},
-}
-
-func (db *DB) ensureExpectedColumns() error {
-	for _, expected := range expectedColumns {
-		exists, err := db.columnExists(expected.table, expected.column)
-		if err != nil {
-			return err
-		}
-		if exists {
-			continue
-		}
-		stmt := fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, expected.table, expected.column, expected.definition)
-		if _, err := db.conn.Exec(stmt); err != nil {
-			if isColumnExistsError(err) {
-				continue
-			}
-			return fmt.Errorf("补齐缺失列 %s.%s 失败: %w", expected.table, expected.column, err)
-		}
-	}
-	return nil
-}
-
-// columnExists 判断表中是否存在指定列；表不存在时返回 false 而非报错。
-func (db *DB) columnExists(table string, column string) (bool, error) {
-	rows, err := db.conn.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table))
-	if err != nil {
-		return false, fmt.Errorf("读取表结构失败 (%s): %w", table, err)
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var (
-			cid        int
-			name       string
-			columnType string
-			notNull    int
-			dfltValue  sql.NullString
-			primaryKey int
-		)
-		if err := rows.Scan(&cid, &name, &columnType, &notNull, &dfltValue, &primaryKey); err != nil {
-			return false, fmt.Errorf("读取表结构行失败 (%s): %w", table, err)
-		}
-		if strings.EqualFold(name, column) {
-			return true, nil
-		}
-	}
-	return false, rows.Err()
 }
 
 // applyMigration 在事务内执行单个版本的所有语句，并记录版本号

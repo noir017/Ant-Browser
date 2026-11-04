@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -28,7 +29,9 @@ type ProfilePackageDatabase struct {
 	Groups                   []ProfilePackageDatabaseGroup             `json:"groups"`
 	Cores                    []ProfilePackageDatabaseCore              `json:"cores"`
 	Proxies                  []ProfilePackageDatabaseProxy             `json:"proxies"`
+	ProxyVirtualGroups       []browser.ProxyVirtualGroup               `json:"proxyVirtualGroups,omitempty"`
 	Extensions               []browser.Extension                       `json:"extensions"`
+	ExtensionArtifacts       []ProfilePackageDatabaseExtensionArtifact `json:"extensionArtifacts,omitempty"`
 	ProfileExtensionSettings []ProfilePackageDatabaseExtensionSettings `json:"profileExtensionSettings"`
 	ProfileExtensions        []ProfilePackageDatabaseExtensionBinding  `json:"profileExtensions"`
 	ProfileExtensionRuntime  []browser.ProfileExtensionRuntime         `json:"profileExtensionRuntime"`
@@ -72,6 +75,12 @@ type ProfilePackageDatabaseExtensionBinding struct {
 	UpdatedAt   string `json:"updatedAt"`
 }
 
+type ProfilePackageDatabaseExtensionArtifact struct {
+	ExtensionID           string `json:"extensionId"`
+	InstallDirArchivePath string `json:"installDirArchivePath,omitempty"`
+	PackageArchivePath    string `json:"packageArchivePath,omitempty"`
+}
+
 func (a *App) collectProfilePackageDatabase(profiles []browser.Profile) (ProfilePackageDatabase, error) {
 	snapshot := ProfilePackageDatabase{
 		Format:                   profilePackageDatabaseFormat,
@@ -80,6 +89,7 @@ func (a *App) collectProfilePackageDatabase(profiles []browser.Profile) (Profile
 		Groups:                   []ProfilePackageDatabaseGroup{},
 		Cores:                    []ProfilePackageDatabaseCore{},
 		Proxies:                  []ProfilePackageDatabaseProxy{},
+		ProxyVirtualGroups:       []browser.ProxyVirtualGroup{},
 		Extensions:               []browser.Extension{},
 		ProfileExtensionSettings: []ProfilePackageDatabaseExtensionSettings{},
 		ProfileExtensions:        []ProfilePackageDatabaseExtensionBinding{},
@@ -120,6 +130,7 @@ func (a *App) collectProfilePackageDatabase(profiles []browser.Profile) (Profile
 	groupIDs := make([]string, 0)
 	coreIDs := make([]string, 0)
 	proxyIDs := make([]string, 0)
+	proxyVirtualGroupNames := make(map[string]struct{})
 	seenGroups := map[string]struct{}{}
 	seenCores := map[string]struct{}{}
 	seenProxies := map[string]struct{}{}
@@ -145,6 +156,11 @@ func (a *App) collectProfilePackageDatabase(profiles []browser.Profile) (Profile
 				proxyIDs = append(proxyIDs, id)
 			}
 		}
+		if browser.IsDynamicProxyMode(profile.ProxyMode) {
+			if groupName := strings.TrimSpace(profile.ProxyGroupName); groupName != "" {
+				proxyVirtualGroupNames[backupImportTextKey(groupName)] = struct{}{}
+			}
+		}
 	}
 
 	groups, warnings, err := queryProfilePackageGroups(conn, groupIDs)
@@ -160,6 +176,25 @@ func (a *App) collectProfilePackageDatabase(profiles []browser.Profile) (Profile
 	}
 	snapshot.Cores = cores
 	snapshot.Warnings = append(snapshot.Warnings, warnings...)
+
+	virtualGroups, err := queryProfilePackageProxyVirtualGroups(conn, proxyVirtualGroupNames)
+	if err != nil {
+		return ProfilePackageDatabase{}, err
+	}
+	for _, group := range virtualGroups {
+		for _, proxyID := range group.MemberProxyIds {
+			key := backupImportIDKey(proxyID)
+			if key == "" {
+				continue
+			}
+			if _, exists := seenProxies[key]; exists {
+				continue
+			}
+			seenProxies[key] = struct{}{}
+			proxyIDs = append(proxyIDs, proxyID)
+		}
+	}
+	snapshot.ProxyVirtualGroups = virtualGroups
 
 	proxies, warnings, err := queryProfilePackageProxies(conn, proxyIDs)
 	if err != nil {
@@ -224,6 +259,7 @@ func (a *App) collectProfilePackageDatabase(profiles []browser.Profile) (Profile
 		}
 		return ProfilePackageDatabase{}, fmt.Errorf("读取插件定义失败(%s): %w", key, err)
 	}
+	snapshot.ExtensionArtifacts = collectProfilePackageExtensionArtifacts(a, snapshot.Extensions, &snapshot.Warnings)
 
 	sort.Slice(snapshot.Groups, func(i, j int) bool {
 		return backupImportIDKey(snapshot.Groups[i].GroupId) < backupImportIDKey(snapshot.Groups[j].GroupId)
@@ -236,6 +272,9 @@ func (a *App) collectProfilePackageDatabase(profiles []browser.Profile) (Profile
 	})
 	sort.Slice(snapshot.Extensions, func(i, j int) bool {
 		return backupImportIDKey(snapshot.Extensions[i].ExtensionID) < backupImportIDKey(snapshot.Extensions[j].ExtensionID)
+	})
+	sort.Slice(snapshot.ExtensionArtifacts, func(i, j int) bool {
+		return backupImportIDKey(snapshot.ExtensionArtifacts[i].ExtensionID) < backupImportIDKey(snapshot.ExtensionArtifacts[j].ExtensionID)
 	})
 	sort.Slice(snapshot.ProfileExtensionSettings, func(i, j int) bool {
 		return backupImportIDKey(snapshot.ProfileExtensionSettings[i].ProfileID) < backupImportIDKey(snapshot.ProfileExtensionSettings[j].ProfileID)
@@ -251,6 +290,67 @@ func (a *App) collectProfilePackageDatabase(profiles []browser.Profile) (Profile
 		return left < right
 	})
 	return snapshot, nil
+}
+
+func collectProfilePackageExtensionArtifacts(a *App, extensions []browser.Extension, warnings *[]string) []ProfilePackageDatabaseExtensionArtifact {
+	artifacts := make([]ProfilePackageDatabaseExtensionArtifact, 0, len(extensions))
+	appendWarning := func(message string) {
+		if warnings != nil && strings.TrimSpace(message) != "" {
+			*warnings = append(*warnings, message)
+		}
+	}
+
+	for index, extension := range extensions {
+		extensionID := strings.TrimSpace(extension.ExtensionID)
+		if extensionID == "" {
+			continue
+		}
+		artifact := ProfilePackageDatabaseExtensionArtifact{ExtensionID: extensionID}
+		installDir := resolveProfilePackagePath(a, extension.InstallDir)
+		if installDir != "" {
+			info, err := os.Stat(installDir)
+			if err == nil && info.IsDir() {
+				artifact.InstallDirArchivePath = filepath.ToSlash(filepath.Join("extensions", fmt.Sprintf("%d", index), "install"))
+			} else if err != nil && !os.IsNotExist(err) {
+				appendWarning(fmt.Sprintf("插件「%s」安装目录无法读取，未随实例包导出：%v", extension.Name, err))
+			}
+		}
+
+		packagePath := resolveProfilePackagePath(a, extension.PackagePath)
+		if packagePath != "" {
+			info, err := os.Stat(packagePath)
+			if err == nil && !info.IsDir() {
+				artifact.PackageArchivePath = filepath.ToSlash(filepath.Join("extensions", fmt.Sprintf("%d", index), "package.crx"))
+			} else if err != nil && !os.IsNotExist(err) {
+				appendWarning(fmt.Sprintf("插件「%s」安装包无法读取，未随实例包导出：%v", extension.Name, err))
+			}
+		}
+
+		if artifact.InstallDirArchivePath == "" && artifact.PackageArchivePath == "" {
+			if extension.InstallMode == browser.ExtensionInstallModePersistent {
+				appendWarning(fmt.Sprintf("插件「%s」的安装目录和安装包均不可用，未随实例包复制", extension.Name))
+			}
+			continue
+		}
+		if artifact.InstallDirArchivePath != "" || artifact.PackageArchivePath != "" {
+			artifacts = append(artifacts, artifact)
+		}
+	}
+	return artifacts
+}
+
+func resolveProfilePackagePath(a *App, value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || filepath.IsAbs(value) {
+		return filepath.Clean(value)
+	}
+	if a != nil && a.browserMgr != nil {
+		return filepath.Clean(a.browserMgr.ResolveRelativePath(value))
+	}
+	if a != nil {
+		return filepath.Clean(a.resolveAppPath(value))
+	}
+	return filepath.Clean(value)
 }
 
 func queryProfilePackageGroups(conn *sql.DB, groupIDs []string) ([]ProfilePackageDatabaseGroup, []string, error) {
@@ -342,6 +442,150 @@ func queryProfilePackageProxies(conn *sql.DB, proxyIDs []string) ([]ProfilePacka
 		result = append(result, proxy)
 	}
 	return result, warnings, nil
+}
+
+func queryProfilePackageProxyVirtualGroups(conn *sql.DB, groupNames map[string]struct{}) ([]browser.ProxyVirtualGroup, error) {
+	if len(groupNames) == 0 {
+		return []browser.ProxyVirtualGroup{}, nil
+	}
+
+	hasMemberProxyIDs, err := profilePackageDatabaseColumnExists(conn, "browser_proxy_virtual_groups", "member_proxy_ids")
+	if err != nil {
+		return nil, err
+	}
+	hasMemberGroupNames, err := profilePackageDatabaseColumnExists(conn, "browser_proxy_virtual_groups", "member_group_names")
+	if err != nil {
+		return nil, err
+	}
+	hasStrategy, err := profilePackageDatabaseColumnExists(conn, "browser_proxy_virtual_groups", "strategy")
+	if err != nil {
+		return nil, err
+	}
+	hasSelectedProxyID, err := profilePackageDatabaseColumnExists(conn, "browser_proxy_virtual_groups", "selected_proxy_id")
+	if err != nil {
+		return nil, err
+	}
+	hasPreferredProxyID, err := profilePackageDatabaseColumnExists(conn, "browser_proxy_virtual_groups", "preferred_proxy_id")
+	if err != nil {
+		return nil, err
+	}
+	memberProxyIDsExpression := `'[]'`
+	if hasMemberProxyIDs {
+		memberProxyIDsExpression = `COALESCE(member_proxy_ids,'[]')`
+	}
+	memberGroupNamesExpression := `'[]'`
+	if hasMemberGroupNames {
+		memberGroupNamesExpression = `COALESCE(member_group_names,'[]')`
+	}
+	strategyExpression := `'round_robin'`
+	if hasStrategy {
+		strategyExpression = `COALESCE(strategy,'round_robin')`
+	}
+	selectedProxyIDExpression := `''`
+	if hasSelectedProxyID {
+		selectedProxyIDExpression = `COALESCE(selected_proxy_id,'')`
+	}
+	preferredProxyIDExpression := `''`
+	if hasPreferredProxyID {
+		preferredProxyIDExpression = `COALESCE(preferred_proxy_id,'')`
+	}
+	legacyProxies := make([]browser.Proxy, 0)
+	if hasMemberGroupNames {
+		legacyProxies, err = queryProfilePackageProxyVirtualGroupMembers(conn)
+		if err != nil {
+			return nil, err
+		}
+	}
+	rows, err := conn.Query(fmt.Sprintf(`
+		SELECT group_id, group_name, %s, %s, %s, %s, %s, sort_order, created_at, updated_at
+		FROM browser_proxy_virtual_groups ORDER BY sort_order ASC, group_name COLLATE NOCASE ASC`, strategyExpression, selectedProxyIDExpression, preferredProxyIDExpression, memberProxyIDsExpression, memberGroupNamesExpression))
+	if err != nil {
+		return nil, fmt.Errorf("读取虚拟代理分组失败: %w", err)
+	}
+	defer rows.Close()
+
+	result := make([]browser.ProxyVirtualGroup, 0)
+	for rows.Next() {
+		var (
+			group                browser.ProxyVirtualGroup
+			strategy             string
+			selectedProxyID      string
+			preferredProxyID     string
+			memberProxyIDsJSON   string
+			memberGroupNamesJSON string
+		)
+		if err := rows.Scan(&group.GroupId, &group.GroupName, &strategy, &selectedProxyID, &preferredProxyID, &memberProxyIDsJSON, &memberGroupNamesJSON, &group.SortOrder, &group.CreatedAt, &group.UpdatedAt); err != nil {
+			return nil, err
+		}
+		group.Strategy = strategy
+		group.SelectedProxyId = selectedProxyID
+		group.PreferredProxyId = preferredProxyID
+		if err := json.Unmarshal([]byte(memberProxyIDsJSON), &group.MemberProxyIds); err != nil {
+			return nil, fmt.Errorf("解析虚拟代理分组代理节点失败: %w", err)
+		}
+		if err := json.Unmarshal([]byte(memberGroupNamesJSON), &group.MemberGroupNames); err != nil {
+			return nil, fmt.Errorf("解析虚拟代理分组成员失败: %w", err)
+		}
+		group = browser.MaterializeProxyVirtualGroup(group, legacyProxies)
+		if _, selected := groupNames[backupImportTextKey(group.GroupName)]; selected {
+			result = append(result, group)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func profilePackageDatabaseColumnExists(conn *sql.DB, table, column string) (bool, error) {
+	rows, err := conn.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var defaultValue any
+		var notNull, primaryKey int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return false, err
+		}
+		if strings.EqualFold(name, column) {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+func queryProfilePackageProxyVirtualGroupMembers(conn *sql.DB) ([]browser.Proxy, error) {
+	hasGroupName, err := profilePackageDatabaseColumnExists(conn, "browser_proxies", "group_name")
+	if err != nil {
+		return nil, err
+	}
+	groupNameExpression := `''`
+	if hasGroupName {
+		groupNameExpression = `COALESCE(group_name,'')`
+	}
+	rows, err := conn.Query(fmt.Sprintf(`
+		SELECT proxy_id, %s
+		FROM browser_proxies ORDER BY sort_order ASC, created_at ASC, proxy_id COLLATE NOCASE ASC`, groupNameExpression))
+	if err != nil {
+		return nil, fmt.Errorf("读取虚拟代理分组历史代理节点失败: %w", err)
+	}
+	defer rows.Close()
+	result := make([]browser.Proxy, 0)
+	for rows.Next() {
+		var item browser.Proxy
+		if err := rows.Scan(&item.ProxyId, &item.GroupName); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func queryProfilePackageExtensionBindings(conn *sql.DB, profileID string) ([]ProfilePackageDatabaseExtensionBinding, error) {
@@ -438,6 +682,10 @@ func (a *App) restoreProfilePackageDatabase(snapshot ProfilePackageDatabase, pre
 	if err != nil {
 		return err
 	}
+	virtualGroupMappings, err := restoreProfilePackageProxyVirtualGroups(tx, snapshot.ProxyVirtualGroups, proxyMappings, snapshot.Proxies, warnings)
+	if err != nil {
+		return err
+	}
 	extensionMappings, err := restoreProfilePackageExtensions(tx, snapshot.Extensions, warnings)
 	if err != nil {
 		return err
@@ -460,7 +708,22 @@ func (a *App) restoreProfilePackageDatabase(snapshot ProfilePackageDatabase, pre
 				appendProfilePackageWarning(warnings, fmt.Sprintf("实例「%s」的内核记录未找到，保留原内核 ID", profile.ProfileName))
 			}
 		}
-		if originalProxyID := strings.TrimSpace(profile.ProxyId); originalProxyID != "" {
+		if browser.IsDynamicProxyMode(profile.ProxyMode) {
+			profile.ProxyId = ""
+			profile.ProxyConfig = ""
+			profile.ProxyBindSourceID = ""
+			profile.ProxyBindSourceURL = ""
+			profile.ProxyBindName = ""
+			profile.ProxyBindUpdatedAt = ""
+			if groupName := strings.TrimSpace(profile.ProxyGroupName); groupName != "" {
+				if mapped := virtualGroupMappings[backupImportTextKey(groupName)]; mapped != "" {
+					profile.ProxyGroupName = mapped
+				} else {
+					appendProfilePackageWarning(warnings, fmt.Sprintf("实例「%s」的动态代理分组「%s」未随实例包导出，已清空分组引用", profile.ProfileName, groupName))
+					profile.ProxyGroupName = ""
+				}
+			}
+		} else if originalProxyID := strings.TrimSpace(profile.ProxyId); originalProxyID != "" {
 			if mapped := proxyMappings[backupImportIDKey(originalProxyID)]; mapped != "" {
 				profile.ProxyId = mapped
 				if value, exists := proxyValues[backupImportIDKey(originalProxyID)]; exists {
@@ -472,9 +735,9 @@ func (a *App) restoreProfilePackageDatabase(snapshot ProfilePackageDatabase, pre
 					}
 				}
 			} else {
-				appendProfilePackageWarning(warnings, fmt.Sprintf("实例「%s」的代理记录未找到，已清空代理绑定", profile.ProfileName))
-				profile.ProxyId = ""
-				profile.ProxyConfig = ""
+				// 不在导入时清空绑定：清空后启动会因「代理 ID 与配置双空」被拒绝，
+				// 早期版本还会直接落到直连。保留原绑定，由用户在启动前显式重选。
+				appendProfilePackageWarning(warnings, fmt.Sprintf("实例「%s」的代理记录未随实例包导入，已保留原代理绑定（proxyId=%s），启动前请确认代理可用", profile.ProfileName, originalProxyID))
 			}
 		}
 		if err := insertProfilePackageProfile(tx, *profile); err != nil {
@@ -941,6 +1204,136 @@ func (a *App) restoreProfilePackageProxies(tx *sql.Tx, source []ProfilePackageDa
 	return mappings, values, nil
 }
 
+func restoreProfilePackageProxyVirtualGroups(tx *sql.Tx, source []browser.ProxyVirtualGroup, proxyMappings map[string]string, sourceProxies []ProfilePackageDatabaseProxy, warnings *[]string) (map[string]string, error) {
+	mappings := make(map[string]string, len(source))
+	if len(source) == 0 {
+		return mappings, nil
+	}
+
+	usedIDs := make(map[string]struct{})
+	usedNames := make(map[string]struct{})
+	rows, err := tx.Query(`SELECT group_id, group_name FROM browser_proxy_virtual_groups`)
+	if err != nil {
+		return nil, fmt.Errorf("读取现有虚拟代理分组失败: %w", err)
+	}
+	for rows.Next() {
+		var groupID, groupName string
+		if err := rows.Scan(&groupID, &groupName); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if key := backupImportIDKey(groupID); key != "" {
+			usedIDs[key] = struct{}{}
+		}
+		if key := backupImportTextKey(groupName); key != "" {
+			usedNames[key] = struct{}{}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+
+	legacyProxies := make([]browser.Proxy, 0, len(sourceProxies))
+	for _, item := range sourceProxies {
+		legacyProxies = append(legacyProxies, item.Proxy)
+	}
+
+	for _, item := range source {
+		group := browser.MaterializeProxyVirtualGroup(item, legacyProxies)
+		if group.GroupName == "" {
+			appendProfilePackageWarning(warnings, "实例包中的虚拟代理分组缺少名称，已跳过")
+			continue
+		}
+		nameKey := backupImportTextKey(group.GroupName)
+
+		mappedProxyIDs := make([]string, 0, len(group.MemberProxyIds))
+		for _, proxyID := range group.MemberProxyIds {
+			mappedID := proxyMappings[backupImportIDKey(proxyID)]
+			if mappedID == "" {
+				appendProfilePackageWarning(warnings, fmt.Sprintf("虚拟代理分组「%s」关联的代理「%s」未找到，已跳过该节点", group.GroupName, proxyID))
+				continue
+			}
+			mappedProxyIDs = append(mappedProxyIDs, mappedID)
+		}
+		group.MemberProxyIds = mappedProxyIDs
+		group = browser.NormalizeProxyVirtualGroup(group)
+		if selectedProxyID := strings.TrimSpace(group.SelectedProxyId); selectedProxyID != "" {
+			if mapped := proxyMappings[backupImportIDKey(selectedProxyID)]; mapped != "" {
+				group.SelectedProxyId = mapped
+			} else {
+				appendProfilePackageWarning(warnings, fmt.Sprintf("虚拟代理分组「%s」的当前代理「%s」未找到，已清空当前选择", group.GroupName, selectedProxyID))
+				group.SelectedProxyId = ""
+			}
+		}
+		if preferredProxyID := strings.TrimSpace(group.PreferredProxyId); preferredProxyID != "" {
+			if mapped := proxyMappings[backupImportIDKey(preferredProxyID)]; mapped != "" {
+				group.PreferredProxyId = mapped
+			} else {
+				appendProfilePackageWarning(warnings, fmt.Sprintf("虚拟代理分组「%s」的偏好代理「%s」未找到，已清空偏好", group.GroupName, preferredProxyID))
+				group.PreferredProxyId = ""
+			}
+		}
+
+		if _, exists := usedNames[nameKey]; exists {
+			group.GroupName = profilePackageUniqueProxyVirtualGroupName(group.GroupName, usedNames)
+			appendProfilePackageWarning(warnings, fmt.Sprintf("虚拟代理分组「%s」与本地同名，已保留本地分组并导入为「%s」", item.GroupName, group.GroupName))
+		}
+		usedNames[backupImportTextKey(group.GroupName)] = struct{}{}
+
+		targetID := strings.TrimSpace(group.GroupId)
+		if targetID == "" {
+			targetID = profilePackageGeneratedID(usedIDs)
+		} else if _, exists := usedIDs[backupImportIDKey(targetID)]; exists {
+			appendProfilePackageWarning(warnings, fmt.Sprintf("虚拟代理分组「%s」ID 冲突，已生成新 ID", group.GroupName))
+			targetID = profilePackageGeneratedID(usedIDs)
+		} else {
+			usedIDs[backupImportIDKey(targetID)] = struct{}{}
+		}
+
+		memberProxyIDs, err := json.Marshal(group.MemberProxyIds)
+		if err != nil {
+			return nil, fmt.Errorf("序列化虚拟代理分组代理节点失败(%s): %w", group.GroupName, err)
+		}
+		memberGroupNames, err := json.Marshal(group.MemberGroupNames)
+		if err != nil {
+			return nil, fmt.Errorf("序列化虚拟代理分组历史成员失败(%s): %w", group.GroupName, err)
+		}
+		createdAt := strings.TrimSpace(group.CreatedAt)
+		if createdAt == "" {
+			createdAt = time.Now().Format(time.RFC3339)
+		}
+		updatedAt := strings.TrimSpace(group.UpdatedAt)
+		if updatedAt == "" {
+			updatedAt = createdAt
+		}
+		if _, err := tx.Exec(`
+			INSERT INTO browser_proxy_virtual_groups (
+				group_id, group_name, strategy, selected_proxy_id, preferred_proxy_id, member_proxy_ids, member_group_names, sort_order, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			targetID, group.GroupName, group.Strategy, group.SelectedProxyId, group.PreferredProxyId, string(memberProxyIDs), string(memberGroupNames), group.SortOrder, createdAt, updatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("恢复虚拟代理分组失败(%s): %w", group.GroupName, err)
+		}
+		mappings[nameKey] = group.GroupName
+	}
+	return mappings, nil
+}
+
+func profilePackageUniqueProxyVirtualGroupName(groupName string, used map[string]struct{}) string {
+	base := strings.TrimSpace(groupName)
+	candidate := base + " (导入)"
+	for suffix := 2; ; suffix++ {
+		if _, exists := used[backupImportTextKey(candidate)]; !exists {
+			return candidate
+		}
+		candidate = fmt.Sprintf("%s (导入 %d)", base, suffix)
+	}
+}
+
 func restoreProfilePackageExtensions(tx *sql.Tx, source []browser.Extension, warnings *[]string) (map[string]string, error) {
 	targetIDs := make(map[string]struct{})
 	rows, err := tx.Query(`SELECT extension_id FROM browser_extensions`)
@@ -1027,10 +1420,10 @@ func insertProfilePackageProfile(tx *sql.Tx, profile browser.Profile) error {
 	}
 	_, err = tx.Exec(`
 		INSERT INTO browser_profiles (
-			profile_id, profile_name, user_data_dir, core_id, fingerprint_args, proxy_id, proxy_config,
+			profile_id, profile_name, user_data_dir, core_id, fingerprint_args, proxy_id, proxy_config, proxy_mode, proxy_group_name,
 			proxy_bind_source_id, proxy_bind_source_url, proxy_bind_name, proxy_bind_updated_at, memory_limit_mb,
 			launch_args, tags, keywords, group_id, created_at, updated_at, restore_last_session, deleted_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(profile_id) DO UPDATE SET
 			profile_name = excluded.profile_name,
 			user_data_dir = excluded.user_data_dir,
@@ -1038,6 +1431,8 @@ func insertProfilePackageProfile(tx *sql.Tx, profile browser.Profile) error {
 			fingerprint_args = excluded.fingerprint_args,
 			proxy_id = excluded.proxy_id,
 			proxy_config = excluded.proxy_config,
+			proxy_mode = excluded.proxy_mode,
+			proxy_group_name = excluded.proxy_group_name,
 			proxy_bind_source_id = excluded.proxy_bind_source_id,
 			proxy_bind_source_url = excluded.proxy_bind_source_url,
 			proxy_bind_name = excluded.proxy_bind_name,
@@ -1052,7 +1447,7 @@ func insertProfilePackageProfile(tx *sql.Tx, profile browser.Profile) error {
 			restore_last_session = excluded.restore_last_session,
 			deleted_at = excluded.deleted_at`,
 		profile.ProfileId, profile.ProfileName, profile.UserDataDir, profile.CoreId, string(fingerprintArgs), profile.ProxyId,
-		profile.ProxyConfig, profile.ProxyBindSourceID, profile.ProxyBindSourceURL, profile.ProxyBindName,
+		profile.ProxyConfig, profile.ProxyMode, profile.ProxyGroupName, profile.ProxyBindSourceID, profile.ProxyBindSourceURL, profile.ProxyBindName,
 		profile.ProxyBindUpdatedAt, profile.MemoryLimitMB, string(launchArgs), string(tags), string(keywords), profile.GroupId,
 		createdAt, updatedAt, profile.RestoreLastSession, profile.DeletedAt,
 	)

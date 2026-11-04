@@ -215,7 +215,7 @@ func (a *App) extensionDownloadHTTPClient(useProxy bool, proxyConfig string) (*h
 		connectorType = a.config.Browser.DefaultConnectorType
 	}
 	log.Info("Chrome 插件下载使用代理", logger.F("connector", connectorType), logger.F("proxy_prefix", proxyConfigLogPrefix(proxyConfig)))
-	return proxy.BuildProxyHTTPClient(proxyConfig, "", proxies, a.xrayMgr, a.singboxMgr, a.clashMgr, connectorType, browser.ExtensionDownloadTimeout())
+	return proxy.BuildProxyHTTPClient(proxyConfig, "", proxies, a.xrayMgr, a.singboxMgr, a.clashMgr, a.mieruMgr, connectorType, browser.ExtensionDownloadTimeout())
 }
 
 func proxyConfigLogPrefix(proxyConfig string) string {
@@ -282,14 +282,10 @@ func (a *App) BrowserExtensionSetEnabled(extensionID string, enabled bool) (Brow
 	if extensionID == "" {
 		return BrowserExtension{}, fmt.Errorf("插件 ID 不能为空")
 	}
+	// 插件改为启动参数加载后，停用只需要改状态位：运行中的实例保持已加载，
+	// 下次启动不再注入。原先逐个实例清理代码目录的遍历没有意义且很慢，已移除。
 	if err := a.browserMgr.ExtensionDAO.SetEnabled(extensionID, enabled); err != nil {
 		return BrowserExtension{}, err
-	}
-	if !enabled {
-		if err := a.browserMgr.RemoveExtensionFromStoppedProfiles(extensionID); err != nil {
-			_ = a.browserMgr.ExtensionDAO.SetEnabled(extensionID, true)
-			return BrowserExtension{}, err
-		}
 	}
 	return a.browserMgr.ExtensionDAO.Get(extensionID)
 }
@@ -328,7 +324,11 @@ func (a *App) BrowserExtensionDelete(extensionID string) error {
 	if _, err := a.resolveBrowserExtensionInstallDir(extension.InstallDir); err != nil {
 		return err
 	}
-	if err := a.browserMgr.RemoveExtensionFromStoppedProfiles(extensionID); err != nil {
+	if err := a.browserMgr.MigrateLegacyExternalExtensionRegistry(); err != nil {
+		return fmt.Errorf("迁移旧版插件外部注册失败，已阻止删除插件：%w", err)
+	}
+	// 只按配置判断是否有运行中的实例正在使用它，不再遍历实例目录。
+	if err := a.browserMgr.EnsureExtensionUnusedByRunningProfiles(extensionID); err != nil {
 		return err
 	}
 	deletionStage, err := a.stageBrowserExtensionDeletion(extension)
@@ -506,5 +506,5 @@ func (a *App) BrowserProfileExtensionSave(profileID string, extensionIDs []strin
 	if a.browserMgr == nil || a.browserMgr.ExtensionDAO == nil {
 		return BrowserProfileExtensionSettings{}, fmt.Errorf("插件管理器未初始化")
 	}
-	return a.browserMgr.ExtensionDAO.SetProfileSettings(profileID, extensionIDs, configured)
+	return a.browserMgr.SaveProfileExtensionSettings(profileID, extensionIDs, configured)
 }

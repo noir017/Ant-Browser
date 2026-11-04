@@ -17,6 +17,7 @@ const (
 	backupScheduleStatusSkipped = "skipped"
 	backupScheduleStatusFailed  = "failed"
 	backupScheduleHistoryLimit  = 3
+	backupScheduleRetryInterval = 5 * time.Minute
 )
 
 type backupScheduleState struct {
@@ -34,6 +35,7 @@ type backupScheduler struct {
 	configurationError string
 	state              backupScheduleState
 	lastDate           string
+	nextAttemptAt      time.Time
 	running            bool
 	resetting          bool
 	stopCh             chan struct{}
@@ -87,6 +89,7 @@ func (s *backupScheduler) loadLocalConfig() error {
 	if recent := s.settings.Schedule.RecentBackupTimes; len(recent) > 0 {
 		s.state.Status = backupScheduleStatusSuccess
 		s.state.LastSuccessAt = recent[0]
+		s.lastDate = backupScheduleDateForTimestamp(recent[0])
 	}
 	return nil
 }
@@ -135,27 +138,27 @@ func (s *backupScheduler) check(now time.Time) {
 	schedule := s.settings.Schedule
 	openList := s.settings.Channels.OpenList
 	lastDate := s.lastDate
+	nextAttemptAt := s.nextAttemptAt
 	running := s.running
 	s.mu.RUnlock()
 
 	if !schedule.Enabled || running {
 		return
 	}
-	if !backupScheduleMatchesTime(schedule.DailyTime, now) {
+	if !backupScheduleDue(schedule.DailyTime, now) {
 		return
 	}
 	today := now.Format("2006-01-02")
-	if lastDate == today {
+	if lastDate == today || (!nextAttemptAt.IsZero() && now.Before(nextAttemptAt)) {
 		return
 	}
 
 	s.mu.Lock()
-	if s.running || s.lastDate == today || s.resetting {
+	if s.running || s.lastDate == today || s.resetting || (!s.nextAttemptAt.IsZero() && now.Before(s.nextAttemptAt)) {
 		s.mu.Unlock()
 		return
 	}
 	s.running = true
-	s.lastDate = today
 	s.state.Status = backupScheduleStatusRunning
 	s.state.LastRunAt = now.UTC().Format(time.RFC3339)
 	s.state.LastError = ""
@@ -177,6 +180,23 @@ func backupScheduleMatchesTime(value string, now time.Time) bool {
 	return parsed.Hour() == now.Hour() && parsed.Minute() == now.Minute()
 }
 
+func backupScheduleDue(value string, now time.Time) bool {
+	parsed, err := backupScheduleParseTime(value, now.Location())
+	if err != nil {
+		return false
+	}
+	scheduled := time.Date(now.Year(), now.Month(), now.Day(), parsed.Hour(), parsed.Minute(), 0, 0, now.Location())
+	return !now.Before(scheduled)
+}
+
+func backupScheduleDateForTimestamp(value string) string {
+	parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(value))
+	if err != nil {
+		return ""
+	}
+	return parsed.In(time.Local).Format("2006-01-02")
+}
+
 func backupScheduleParseTime(value string, location *time.Location) (time.Time, error) {
 	value = strings.TrimSpace(value)
 	if len(value) != 5 || value[2] != ':' {
@@ -196,11 +216,6 @@ func (s *backupScheduler) execute(openList config.OpenListChannelConfig) {
 		s.recordFailure("未配置 OpenList 地址")
 		return
 	}
-	if strings.TrimSpace(openList.Token) == "" {
-		s.recordFailure("未配置 OpenList Token")
-		return
-	}
-
 	if runningNames := s.app.backupRunningProfileNames(); len(runningNames) > 0 {
 		s.recordSkipped(fmt.Sprintf("实例正在运行：%s", strings.Join(runningNames, "、")))
 		return
@@ -214,6 +229,9 @@ func (s *backupScheduler) execute(openList config.OpenListChannelConfig) {
 	result, err := s.app.backupOpenListUploadLocked(map[string]string{
 		"baseURL":             openList.BaseURL,
 		"remotePath":          openList.RemotePath,
+		"authMode":            openList.AuthMode,
+		"username":            openList.Username,
+		"password":            openList.Password,
 		"token":               openList.Token,
 		"uploadRateLimitMBps": strconv.Itoa(openList.UploadRateLimitMBps),
 	})
@@ -245,6 +263,11 @@ func (s *backupScheduler) recordSuccessAt(successAt, remoteName string) {
 	s.state.LastRemoteName = remoteName
 	recent := normalizeBackupScheduleTimes(append([]string{successAt}, s.settings.Schedule.RecentBackupTimes...))
 	s.settings.Schedule.RecentBackupTimes = recent
+	s.lastDate = backupScheduleDateForTimestamp(successAt)
+	if s.lastDate == "" {
+		s.lastDate = time.Now().Format("2006-01-02")
+	}
+	s.nextAttemptAt = time.Time{}
 
 	if s.app == nil || s.app.config == nil {
 		return
@@ -259,6 +282,7 @@ func (s *backupScheduler) recordSkipped(message string) {
 	s.mu.Lock()
 	s.state.Status = backupScheduleStatusSkipped
 	s.state.LastError = message
+	s.nextAttemptAt = time.Now().Add(backupScheduleRetryInterval)
 	s.mu.Unlock()
 }
 
@@ -266,6 +290,7 @@ func (s *backupScheduler) recordFailure(message string) {
 	s.mu.Lock()
 	s.state.Status = backupScheduleStatusFailed
 	s.state.LastError = strings.TrimSpace(message)
+	s.nextAttemptAt = time.Now().Add(backupScheduleRetryInterval)
 	s.mu.Unlock()
 }
 
@@ -293,11 +318,12 @@ func (s *backupScheduler) snapshot() map[string]interface{} {
 	return backupScheduledSettingsSnapshot(s.app, s)
 }
 
-func backupScheduledSettingsResult(settings config.BackupConfig, state backupScheduleState, tokenConfigured bool) map[string]interface{} {
+func backupScheduledSettingsResult(settings config.BackupConfig, state backupScheduleState, authConfigured bool) map[string]interface{} {
 	return map[string]interface{}{
 		"enabled":           settings.Schedule.Enabled,
 		"dailyTime":         settings.Schedule.DailyTime,
-		"tokenConfigured":   tokenConfigured,
+		"authConfigured":    authConfigured,
+		"tokenConfigured":   strings.TrimSpace(settings.Channels.OpenList.Token) != "",
 		"status":            state.Status,
 		"lastRunAt":         state.LastRunAt,
 		"lastSuccessAt":     state.LastSuccessAt,
@@ -319,18 +345,26 @@ func backupScheduledSettingsSnapshot(app *App, scheduler *backupScheduler) map[s
 				settings = stored
 			}
 		}
-		tokenConfigured := strings.TrimSpace(settings.Channels.OpenList.Token) != ""
+		authConfigured := openListAuthConfigured(settings.Channels.OpenList)
 		state := backupScheduleState{Status: backupScheduleStatusNever}
 		if recent := settings.Schedule.RecentBackupTimes; len(recent) > 0 {
 			state.Status = backupScheduleStatusSuccess
 			state.LastSuccessAt = recent[0]
 		}
-		return backupScheduledSettingsResult(settings, state, tokenConfigured)
+		return backupScheduledSettingsResult(settings, state, authConfigured)
 	}
 	scheduler.mu.RLock()
 	defer scheduler.mu.RUnlock()
-	tokenConfigured := strings.TrimSpace(scheduler.settings.Channels.OpenList.Token) != ""
-	return backupScheduledSettingsResult(scheduler.settings, scheduler.state, tokenConfigured)
+	authConfigured := openListAuthConfigured(scheduler.settings.Channels.OpenList)
+	return backupScheduledSettingsResult(scheduler.settings, scheduler.state, authConfigured)
+}
+
+func openListAuthConfigured(settings config.OpenListChannelConfig) bool {
+	mode := strings.ToLower(strings.TrimSpace(settings.AuthMode))
+	if mode == "basic" || (mode == "" && strings.TrimSpace(settings.Username) != "") {
+		return strings.TrimSpace(settings.Username) != "" && strings.TrimSpace(settings.Password) != ""
+	}
+	return strings.TrimSpace(settings.Token) != ""
 }
 
 func normalizeBackupScheduleTimes(values []string) []string {
@@ -385,14 +419,17 @@ func (s *backupScheduler) saveSchedule(input map[string]string) (map[string]inte
 		if next.Channels.OpenList.BaseURL == "" {
 			return nil, fmt.Errorf("启用定时备份前请配置 OpenList 地址")
 		}
-		if next.Channels.OpenList.Token == "" {
-			return nil, fmt.Errorf("启用定时备份前请配置 OpenList Token")
+		if !openListAuthConfigured(next.Channels.OpenList) {
+			return nil, fmt.Errorf("启用定时备份前请配置 OpenList 认证信息")
 		}
 	}
 	if next.Schedule.Enabled {
 		if _, err := openlist.NewClient(openlist.Config{
 			BaseURL:             next.Channels.OpenList.BaseURL,
 			RemotePath:          next.Channels.OpenList.RemotePath,
+			AuthMode:            next.Channels.OpenList.AuthMode,
+			Username:            next.Channels.OpenList.Username,
+			Password:            next.Channels.OpenList.Password,
 			Token:               next.Channels.OpenList.Token,
 			UploadRateLimitMBps: next.Channels.OpenList.UploadRateLimitMBps,
 		}); err != nil {
@@ -418,12 +455,15 @@ func (s *backupScheduler) saveOpenList(input map[string]string) (map[string]inte
 	if next.Channels.OpenList.BaseURL == "" {
 		return nil, fmt.Errorf("OpenList 地址不能为空")
 	}
-	if next.Channels.OpenList.Token == "" {
-		return nil, fmt.Errorf("OpenList Token 不能为空")
+	if !openListAuthConfigured(next.Channels.OpenList) {
+		return nil, fmt.Errorf("OpenList 认证信息不能为空")
 	}
 	if _, err := openlist.NewClient(openlist.Config{
 		BaseURL:             next.Channels.OpenList.BaseURL,
 		RemotePath:          next.Channels.OpenList.RemotePath,
+		AuthMode:            next.Channels.OpenList.AuthMode,
+		Username:            next.Channels.OpenList.Username,
+		Password:            next.Channels.OpenList.Password,
 		Token:               next.Channels.OpenList.Token,
 		UploadRateLimitMBps: next.Channels.OpenList.UploadRateLimitMBps,
 	}); err != nil {
@@ -446,8 +486,8 @@ func applyOpenListInput(next *config.BackupConfig, input map[string]string) erro
 	if value, ok := backupOpenListInputValueWithPresence(input, "remotePath", "path"); ok {
 		next.Channels.OpenList.RemotePath = value
 	}
-	if token := strings.TrimSpace(input["token"]); token != "" {
-		next.Channels.OpenList.Token = token
+	if err := applyOpenListAuthInput(&next.Channels.OpenList, input); err != nil {
+		return err
 	}
 	if value := backupOpenListInputValue(input, "uploadRateLimitMBps", "uploadRateLimitMbps", "upload_rate_limit_mbps"); value != "" {
 		rateLimit, err := strconv.Atoi(value)
@@ -476,6 +516,6 @@ func (s *backupScheduler) commitSettingsLocked(next config.BackupConfig) (map[st
 }
 
 func (s *backupScheduler) snapshotLocked() map[string]interface{} {
-	tokenConfigured := strings.TrimSpace(s.settings.Channels.OpenList.Token) != ""
-	return backupScheduledSettingsResult(s.settings, s.state, tokenConfigured)
+	authConfigured := openListAuthConfigured(s.settings.Channels.OpenList)
+	return backupScheduledSettingsResult(s.settings, s.state, authConfigured)
 }

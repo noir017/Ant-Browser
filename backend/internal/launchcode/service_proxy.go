@@ -19,7 +19,7 @@ import (
 
 // ProxyProvider 提供代理池与内核信息。由宿主显式注入。
 type ProxyProvider interface {
-	ListProxyNodes() []config.BrowserProxy
+	ListProxyNodes() ([]config.BrowserProxy, error)
 	TestProxyNodeSpeed(proxyID string) ProxySpeedResult
 	CheckProxyNodeHealth(proxyID string) ProxyHealthResult
 	ListBrowserCores() []config.BrowserCore
@@ -59,7 +59,7 @@ func (s *LaunchServer) ListProxies() ([]config.BrowserProxy, error) {
 	if provider == nil {
 		return nil, newServiceError(http.StatusServiceUnavailable, proxyAPIUnavailable)
 	}
-	return provider.ListProxyNodes(), nil
+	return provider.ListProxyNodes()
 }
 
 // TestProxySpeed 对指定代理测速。

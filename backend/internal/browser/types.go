@@ -17,8 +17,10 @@ type Profile struct {
 	CoreId             string   `json:"coreId"`
 	RestoreLastSession string   `json:"restoreLastSession"`
 	FingerprintArgs    []string `json:"fingerprintArgs"`
+	ProxyMode          string   `json:"proxyMode"`
 	ProxyId            string   `json:"proxyId"`
 	ProxyConfig        string   `json:"proxyConfig"`
+	ProxyGroupName     string   `json:"proxyGroupName"`
 	ProxyBindSourceID  string   `json:"proxyBindSourceId"`
 	ProxyBindSourceURL string   `json:"proxyBindSourceUrl"`
 	ProxyBindName      string   `json:"proxyBindName"`
@@ -51,8 +53,10 @@ type ProfileInput struct {
 	CoreId             string   `json:"coreId"`
 	RestoreLastSession string   `json:"restoreLastSession"`
 	FingerprintArgs    []string `json:"fingerprintArgs"`
+	ProxyMode          string   `json:"proxyMode"`
 	ProxyId            string   `json:"proxyId"`
 	ProxyConfig        string   `json:"proxyConfig"`
+	ProxyGroupName     string   `json:"proxyGroupName"`
 	MemoryLimitMB      int      `json:"memoryLimitMb"`
 	LaunchArgs         []string `json:"launchArgs"`
 	Tags               []string `json:"tags"`
@@ -84,6 +88,7 @@ type Settings struct {
 	RestoreLastSession     bool     `json:"restoreLastSession"`
 	StartReadyTimeoutMs    int      `json:"startReadyTimeoutMs"`
 	StartStableWindowMs    int      `json:"startStableWindowMs"`
+	MaxConcurrentInstances int      `json:"maxConcurrentInstances"`
 	DefaultConnectorType   string   `json:"defaultConnectorType"`
 }
 
@@ -139,6 +144,7 @@ type Proxy = config.BrowserProxy
 type Core = config.BrowserCore
 type Environment = config.BrowserEnvironment
 type ProfileConfig = config.BrowserProfileConfig
+type ProxyVirtualGroup = config.BrowserProxyVirtualGroup
 
 // CodeProvider 提供 LaunchCode 的接口（由 launchcode.LaunchCodeService 实现）
 type CodeProvider interface {
@@ -148,27 +154,34 @@ type CodeProvider interface {
 
 type RuntimeEventEmitter func(eventName string, optionalData ...interface{})
 
+type ProfileRuntimeDetector func(profile *Profile) bool
+
 type CoreDownloadHTTPClientFactory func(proxyConfig string, timeout time.Duration) (*http.Client, error)
 
 // Manager 浏览器管理器
 type Manager struct {
-	Config                        *config.Config
-	AppRoot                       string // 应用根目录，所有相对路径基于此解析（生产=exe目录，dev=项目根目录）
-	Profiles                      map[string]*Profile
-	Mutex                         sync.Mutex
-	BrowserProcesses              map[string]*exec.Cmd
-	XrayBridges                   map[string]*XrayBridge
-	CodeProvider                  CodeProvider
-	EventEmitter                  RuntimeEventEmitter
-	CoreDownloadHTTPClientFactory CoreDownloadHTTPClientFactory
+	Config                                 *config.Config
+	AppRoot                                string // 应用根目录，所有相对路径基于此解析（生产=exe目录，dev=项目根目录）
+	Profiles                               map[string]*Profile
+	Mutex                                  sync.Mutex
+	externalExtensionRegistryMigrationOnce sync.Once
+	externalExtensionRegistryMigrationErr  error
+	BrowserProcesses                       map[string]*exec.Cmd
+	XrayBridges                            map[string]*XrayBridge
+	CodeProvider                           CodeProvider
+	EventEmitter                           RuntimeEventEmitter
+	ProfileRuntimeDetector                 ProfileRuntimeDetector
+	CoreDownloadHTTPClientFactory          CoreDownloadHTTPClientFactory
 
 	// DAO 层（注入后使用 SQLite 存储，未注入时降级到 config.yaml）
-	ProfileDAO   ProfileDAO
-	ProxyDAO     ProxyDAO
-	CoreDAO      CoreDAO
-	BookmarkDAO  BookmarkDAO
-	GroupDAO     GroupDAO
-	ExtensionDAO ExtensionDAO
+	ProfileDAO                      ProfileDAO
+	ProxyDAO                        ProxyDAO
+	ProxyVirtualGroupDAO            ProxyVirtualGroupDAO
+	ProxyVirtualGroupMemberStateDAO ProxyVirtualGroupMemberStateDAO
+	CoreDAO                         CoreDAO
+	BookmarkDAO                     BookmarkDAO
+	GroupDAO                        GroupDAO
+	ExtensionDAO                    ExtensionDAO
 }
 
 // XrayBridge Xray 桥接进程

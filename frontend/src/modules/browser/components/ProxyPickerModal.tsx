@@ -1,16 +1,24 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Plus, Search, Wifi, X } from 'lucide-react'
 import { ConfirmModal, toast } from '../../../shared/components'
-import type { BrowserProxy } from '../types'
-import { browserProxyBatchTestSpeed, browserProxyTestSpeed, fetchBrowserProxies, fetchBrowserProxyGroups, saveBrowserProxies } from '../api'
-import { EventsOn } from '../../../wailsjs/runtime/runtime'
+import type { BrowserProxy, BrowserProxyVirtualGroup } from '../types'
+import { fetchBrowserProxies, fetchBrowserProxyGroups, fetchBrowserProxyVirtualGroups, saveBrowserProxies } from '../api'
+import { useProxySpeedFreshness } from '../proxySpeedFreshness'
+import { isProxySpeedResultFresh } from '../pages/proxyPool/storage'
+import { useProxySpeedStore } from '../proxySpeedStore'
+import { ensureProxySpeedListener, testProxySpeeds, testProxySpeedOnce } from '../proxySpeedService'
 import { ProxyImportModal } from './ProxyImportModal'
 import { ProxyEditModal } from './ProxyPickerModal.edit'
 import { GroupItem, ProxyRow } from './ProxyPickerModal.rows'
-import { ALL_GROUP, BATCH_TEST_CONCURRENCY, DIRECT_PROXY_ID, INITIAL_CHAIN_EDIT_FORM, SPEED_RESULT_EVENT, buildChainProxyConfig, formatProxyConfigForDisplay, parseChainSocks5Config, toChainEditForm, type ChainEditForm, type ChainHopForm, type SpeedResult } from './ProxyPickerModal.helpers'
+import { ALL_GROUP, BATCH_TEST_CONCURRENCY, DIRECT_PROXY_ID, INITIAL_CHAIN_EDIT_FORM, buildChainProxyConfig, formatProxyConfigForDisplay, parseChainSocks5Config, toChainEditForm, type ChainEditForm, type ChainHopForm, type SpeedResult } from './ProxyPickerModal.helpers'
 
 const DIRECT_GROUP = '__direct_proxy__'
+const VIRTUAL_GROUP_PREFIX = '__virtual_proxy_group__:'
+
+function getVirtualGroupKey(group: BrowserProxyVirtualGroup) {
+  return `${VIRTUAL_GROUP_PREFIX}${group.groupId.trim() || group.groupName.trim().toLowerCase()}`
+}
 const BUILTIN_DIRECT_PROXY: BrowserProxy = {
   proxyId: DIRECT_PROXY_ID,
   proxyName: '\u76f4\u8fde\uff08\u4e0d\u8d70\u4ee3\u7406\uff09',
@@ -28,6 +36,7 @@ interface ProxyPickerModalProps {
   open: boolean
   currentProxyId: string
   title?: string
+  showVirtualGroups?: boolean
   onSelect: (proxy: BrowserProxy) => void
   onClose: () => void
   onProxyListUpdated?: (proxies: BrowserProxy[]) => void
@@ -35,15 +44,17 @@ interface ProxyPickerModalProps {
   onProxyTested?: (proxyId: string, result: SpeedResult) => void
 }
 
-export function ProxyPickerModal({ open, currentProxyId, title = '从代理池选择', onSelect, onClose, onProxyListUpdated, onProxyDeleted, onProxyTested }: ProxyPickerModalProps) {
+export function ProxyPickerModal({ open, currentProxyId, title = '从代理池选择', showVirtualGroups = false, onSelect, onClose, onProxyListUpdated, onProxyDeleted, onProxyTested }: ProxyPickerModalProps) {
+  const { now, speedResultMaxAgeMs } = useProxySpeedFreshness()
   const [groups, setGroups] = useState<string[]>([])
+  const [virtualGroups, setVirtualGroups] = useState<BrowserProxyVirtualGroup[]>([])
   const [allProxies, setAllProxies] = useState<BrowserProxy[]>([])
   const [selectedGroup, setSelectedGroup] = useState<string>(ALL_GROUP)
   const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
-  const [speedMap, setSpeedMap] = useState<Record<string, SpeedResult>>({})
-  const [testingIds, setTestingIds] = useState<Set<string>>(new Set())
+  const speedResults = useProxySpeedStore(state => state.results)
+  const testingIds = useProxySpeedStore(state => state.testingIds)
   const [editingProxy, setEditingProxy] = useState<BrowserProxy | null>(null)
   const [editName, setEditName] = useState('')
   const [editConfig, setEditConfig] = useState('')
@@ -53,30 +64,22 @@ export function ProxyPickerModal({ open, currentProxyId, title = '从代理池�
   const [chainEditForm, setChainEditForm] = useState<ChainEditForm>(INITIAL_CHAIN_EDIT_FORM)
   const [savingEdit, setSavingEdit] = useState(false)
   const [deleteCandidate, setDeleteCandidate] = useState<BrowserProxy | null>(null)
-  const abortRef = useRef(false)
+
 
   const loadData = async () => {
     setLoading(true)
     try {
-      const [groupList, proxyList] = await Promise.all([
+      const [groupList, virtualGroupList, proxyList] = await Promise.all([
         fetchBrowserProxyGroups(),
+        fetchBrowserProxyVirtualGroups(),
         fetchBrowserProxies(),
       ])
       const nextProxies = ensureBuiltinDirectProxy(proxyList)
       setGroups(groupList)
+      setVirtualGroups(virtualGroupList)
       setAllProxies(nextProxies)
       onProxyListUpdated?.(nextProxies)
-      const initMap: Record<string, SpeedResult> = {}
-      nextProxies.forEach(proxy => {
-        if (proxy.lastTestedAt) {
-          initMap[proxy.proxyId] = {
-            ok: proxy.lastTestOk ?? false,
-            latencyMs: proxy.lastLatencyMs ?? -1,
-            error: '',
-          }
-        }
-      })
-      setSpeedMap(initMap)
+      useProxySpeedStore.getState().applyBackendResults(nextProxies, (testedAt) => isProxySpeedResultFresh(testedAt))
       return nextProxies
     } finally {
       setLoading(false)
@@ -87,19 +90,59 @@ export function ProxyPickerModal({ open, currentProxyId, title = '从代理池�
     if (!open) return
     setSelectedGroup(ALL_GROUP)
     setSearch('')
-    setSpeedMap({})
-    setTestingIds(new Set())
     setEditingProxy(null)
     setDeleteCandidate(null)
-    abortRef.current = false
+    ensureProxySpeedListener()
     void loadData()
-    return () => { abortRef.current = true }
   }, [open])
+
+  // 弹窗常开时，后台调度器测出的新结果不会触发列表重拉，这里周期性同步一次，
+  // 避免"后端已经测出结果、界面一直显示未测"。
+  useEffect(() => {
+    if (!open) return
+    const timer = window.setInterval(() => {
+      void fetchBrowserProxies()
+        .then(list => {
+          const nextProxies = ensureBuiltinDirectProxy(list)
+          useProxySpeedStore
+            .getState()
+            .applyBackendResults(nextProxies, testedAt => isProxySpeedResultFresh(testedAt))
+        })
+        .catch(() => {
+          // 同步失败不打扰用户，下一轮继续。
+        })
+    }, 20_000)
+    return () => window.clearInterval(timer)
+  }, [open])
+
+  const getFreshSpeedResult = (proxy: BrowserProxy): SpeedResult | undefined => {
+    const result = speedResults[proxy.proxyId]
+    if (!result || !isProxySpeedResultFresh(result.testedAt, now, speedResultMaxAgeMs)) return undefined
+    return result
+  }
+
+  const virtualGroupMembers = useMemo(() => {
+    const result = new Map<string, Set<string>>()
+    virtualGroups.forEach(group => {
+      const memberIDs = new Set((group.memberProxyIds || []).map(proxyId => proxyId.trim().toLowerCase()).filter(Boolean))
+      const memberGroupNames = new Set((group.memberGroupNames || []).map(groupName => groupName.trim().toLowerCase()).filter(Boolean))
+      allProxies.forEach(proxy => {
+        if (memberGroupNames.has((proxy.groupName || '').trim().toLowerCase())) {
+          memberIDs.add(proxy.proxyId.trim().toLowerCase())
+        }
+      })
+      result.set(getVirtualGroupKey(group), memberIDs)
+    })
+    return result
+  }, [allProxies, virtualGroups])
 
   const displayProxies = useMemo(() => {
     let list = allProxies
     if (selectedGroup === DIRECT_GROUP) {
       list = list.filter(proxy => proxy.proxyId === DIRECT_PROXY_ID)
+    } else if (selectedGroup.startsWith(VIRTUAL_GROUP_PREFIX)) {
+      const memberIDs = virtualGroupMembers.get(selectedGroup) || new Set<string>()
+      list = list.filter(proxy => memberIDs.has(proxy.proxyId.trim().toLowerCase()))
     } else if (selectedGroup !== ALL_GROUP) {
       list = list.filter(proxy => proxy.groupName === selectedGroup)
     }
@@ -112,11 +155,7 @@ export function ProxyPickerModal({ open, currentProxyId, title = '从代理池�
     }
 
     const getSortTuple = (proxy: BrowserProxy): [number, number, string] => {
-      const latest = speedMap[proxy.proxyId]
-      const history = proxy.lastTestedAt
-        ? { ok: proxy.lastTestOk ?? false, latencyMs: proxy.lastLatencyMs ?? -1 }
-        : undefined
-      const result = latest || history
+      const result = getFreshSpeedResult(proxy)
 
       if (result?.ok && result.latencyMs >= 0) {
         return [0, result.latencyMs, proxy.proxyName || '']
@@ -142,7 +181,7 @@ export function ProxyPickerModal({ open, currentProxyId, title = '从代理池�
         proxy,
         displayConfig: formatProxyConfigForDisplay(proxy.proxyConfig),
       }))
-  }, [selectedGroup, search, allProxies, speedMap])
+  }, [selectedGroup, search, allProxies, speedResults, virtualGroupMembers, now, speedResultMaxAgeMs])
 
   const groupCounts = useMemo(() => {
     const counts = new Map<string, number>()
@@ -153,84 +192,30 @@ export function ProxyPickerModal({ open, currentProxyId, title = '从代理池�
     return counts
   }, [allProxies])
 
+  const virtualGroupCounts = useMemo(() => new Map(
+    Array.from(virtualGroupMembers.entries()).map(([groupKey, memberIDs]) => [
+      groupKey,
+      allProxies.filter(proxy => memberIDs.has(proxy.proxyId.trim().toLowerCase())).length,
+    ]),
+  ), [allProxies, virtualGroupMembers])
+
+  const selectedVirtualGroup = useMemo(
+    () => (showVirtualGroups ? virtualGroups.find(group => getVirtualGroupKey(group) === selectedGroup) : undefined),
+    [showVirtualGroups, virtualGroups, selectedGroup],
+  )
+
   const testOne = async (proxyId: string, e: React.MouseEvent) => {
     e.stopPropagation()
-    if (testingIds.has(proxyId)) return
-    setTestingIds(prev => new Set(prev).add(proxyId))
-    try {
-      const result = await browserProxyTestSpeed(proxyId)
-      if (!abortRef.current) {
-        const nextResult = { ok: result.ok, latencyMs: result.latencyMs, error: result.error }
-        setSpeedMap(prev => ({
-          ...prev,
-          [proxyId]: nextResult,
-        }))
-        onProxyTested?.(proxyId, nextResult)
-      }
-    } finally {
-      setTestingIds(prev => {
-        const next = new Set(prev)
-        next.delete(proxyId)
-        return next
-      })
-    }
+    if (testingIds[proxyId]) return
+    const result = await testProxySpeedOnce(proxyId)
+    onProxyTested?.(proxyId, result)
   }
 
   const testAll = async () => {
     const ids = displayProxies.map(item => item.proxy.proxyId).filter(id => id !== DIRECT_PROXY_ID)
     if (ids.length === 0) return
-
-    abortRef.current = false
-    setTestingIds(new Set(ids))
-    const idSet = new Set(ids)
-
-    const off = EventsOn(SPEED_RESULT_EVENT, (data: { proxyId: string; ok: boolean; latencyMs: number; error: string }) => {
-      if (abortRef.current || !idSet.has(data.proxyId)) return
-      const nextResult = { ok: data.ok, latencyMs: data.latencyMs, error: data.error }
-      setSpeedMap(prev => ({
-        ...prev,
-        [data.proxyId]: nextResult,
-      }))
-      onProxyTested?.(data.proxyId, nextResult)
-      setTestingIds(prev => {
-        const next = new Set(prev)
-        next.delete(data.proxyId)
-        return next
-      })
-    })
-
-    try {
-      const results = await browserProxyBatchTestSpeed(ids, BATCH_TEST_CONCURRENCY)
-      if (!abortRef.current) {
-        setSpeedMap(prev => {
-          const next = { ...prev }
-          let changed = false
-          results.forEach(result => {
-            if (!idSet.has(result.proxyId)) return
-            const current = next[result.proxyId]
-            if (
-              !current ||
-              current.ok !== result.ok ||
-              current.latencyMs !== result.latencyMs ||
-              current.error !== result.error
-            ) {
-              const nextResult = { ok: result.ok, latencyMs: result.latencyMs, error: result.error }
-              next[result.proxyId] = nextResult
-              onProxyTested?.(result.proxyId, nextResult)
-              changed = true
-            }
-          })
-          return changed ? next : prev
-        })
-      }
-    } finally {
-      off()
-      setTestingIds(prev => {
-        const next = new Set(prev)
-        ids.forEach(id => next.delete(id))
-        return next
-      })
-    }
+    const results = await testProxySpeeds(ids, BATCH_TEST_CONCURRENCY)
+    results.forEach(result => onProxyTested?.(result.proxyId, result))
   }
 
   const handleImported = async (newProxies: BrowserProxy[]) => {
@@ -383,7 +368,21 @@ export function ProxyPickerModal({ open, currentProxyId, title = '从代理池�
                 onClick={() => setSelectedGroup(groupName)}
               />
             ))}
-            {groups.length === 0 && <p className="text-xs text-[var(--color-text-muted)] px-3 py-2">暂无分组</p>}
+            {showVirtualGroups && virtualGroups.map(group => {
+              const groupKey = getVirtualGroupKey(group)
+              return (
+                <GroupItem
+                  key={groupKey}
+                  label={`虚拟：${group.groupName}`}
+                  active={selectedGroup === groupKey}
+                  count={virtualGroupCounts.get(groupKey) || 0}
+                  onClick={() => setSelectedGroup(groupKey)}
+                />
+              )
+            })}
+            {groups.length === 0 && (!showVirtualGroups || virtualGroups.length === 0) && (
+              <p className="px-3 py-2 text-xs text-[var(--color-text-muted)]">暂无分组</p>
+            )}
           </div>
 
           <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
@@ -407,7 +406,7 @@ export function ProxyPickerModal({ open, currentProxyId, title = '从代理池�
               </button>
               <button
                 onClick={testAll}
-                disabled={testingIds.size > 0 || displayProxies.length === 0}
+                disabled={Object.keys(testingIds).length > 0 || displayProxies.length === 0}
                 className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:text-[var(--color-primary)] hover:border-[var(--color-primary)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
               >
                 <Wifi className="w-3.5 h-3.5" />
@@ -416,32 +415,69 @@ export function ProxyPickerModal({ open, currentProxyId, title = '从代理池�
             </div>
 
             <div className="flex-1 overflow-y-auto">
+              {selectedVirtualGroup && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onSelect({
+                      proxyId: selectedVirtualGroup.groupId,
+                      proxyName: `虚拟分组 · ${selectedVirtualGroup.groupName}`,
+                      proxyConfig: '',
+                    })
+                    onClose()
+                  }}
+                  className={`flex w-full items-center justify-between gap-2 border-b border-[var(--color-border-default)] px-4 py-2.5 text-left text-sm ${
+                    currentProxyId === selectedVirtualGroup.groupId
+                      ? 'bg-[var(--color-bg-muted)]'
+                      : 'hover:bg-[var(--color-bg-muted)]'
+                  }`}
+                >
+                  <span className="min-w-0 truncate text-[var(--color-text-primary)]">
+                    整组使用：{selectedVirtualGroup.groupName}
+                  </span>
+                  <span className="shrink-0 text-xs text-[var(--color-text-muted)]">
+                    {selectedVirtualGroup.strategy === 'sticky' ? '代理保持' : '绝对轮询'}
+                  </span>
+                </button>
+              )}
               {loading ? (
                 <div className="flex items-center justify-center h-24 text-sm text-[var(--color-text-muted)]">加载中...</div>
               ) : displayProxies.length === 0 ? (
                 <div className="flex items-center justify-center h-24 text-sm text-[var(--color-text-muted)]">暂无代理</div>
               ) : (
-                displayProxies.map(item => (
-                  <ProxyRow
-                    key={item.proxy.proxyId}
-                    proxy={item.proxy}
-                    selected={item.proxy.proxyId === currentProxyId}
-                    testing={testingIds.has(item.proxy.proxyId)}
-                    speedResult={speedMap[item.proxy.proxyId]}
-                    displayConfig={item.displayConfig}
-                    onSelect={() => { onSelect(item.proxy); onClose() }}
-                    onTest={e => testOne(item.proxy.proxyId, e)}
-                    onEdit={e => handleEditClick(item.proxy, e)}
-                    onDelete={e => handleDeleteClick(item.proxy, e)}
-                  />
-                ))
+                displayProxies.map(item => {
+                  const speedResult = getFreshSpeedResult(item.proxy)
+                  const unavailable = !!speedResult && !speedResult.ok
+                  return (
+                    <ProxyRow
+                      key={item.proxy.proxyId}
+                      proxy={item.proxy}
+                      selected={item.proxy.proxyId === currentProxyId}
+                      testing={!!testingIds[item.proxy.proxyId]}
+                      speedResult={speedResult}
+                      displayConfig={item.displayConfig}
+                      unavailable={unavailable}
+                      onSelect={() => {
+                        if (unavailable) {
+                          toast.error(`${item.proxy.proxyName || item.proxy.proxyId} 测速失败，已被标记为不可用；请先测速恢复后再选择`)
+                          return
+                        }
+                        onSelect(item.proxy)
+                        onClose()
+                      }}
+                      onTest={e => testOne(item.proxy.proxyId, e)}
+                      onEdit={e => handleEditClick(item.proxy, e)}
+                      onDelete={e => handleDeleteClick(item.proxy, e)}
+                    />
+                  )
+                })
               )}
             </div>
           </div>
         </div>
 
         <div className="px-4 py-2.5 border-t border-[var(--color-border)] text-xs text-[var(--color-text-muted)]">
-          共 {displayProxies.length} 条，点击行即选中
+          共 {displayProxies.length} 条，点击行即选中（测速失败的节点不可选）
         </div>
       </div>
 

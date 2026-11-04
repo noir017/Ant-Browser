@@ -21,20 +21,28 @@ import (
 const profilePackageFormat = "ant-chrome-profile-package"
 
 type ProfilePackageManifest struct {
-	Format          string   `json:"format"`
-	Version         int      `json:"version"`
-	ExportedAt      string   `json:"exportedAt"`
-	ProfileCount    int      `json:"profileCount"`
-	ProfileNames    []string `json:"profileNames,omitempty"`
-	DatabaseVersion int      `json:"databaseVersion,omitempty"`
+	Format                      string   `json:"format"`
+	Version                     int      `json:"version"`
+	ExportedAt                  string   `json:"exportedAt"`
+	ProfileCount                int      `json:"profileCount"`
+	ProfileNames                []string `json:"profileNames,omitempty"`
+	DatabaseVersion             int      `json:"databaseVersion,omitempty"`
+	PortableSessionVersion      int      `json:"portableSessionVersion,omitempty"`
+	PortableSessionProfileCount int      `json:"portableSessionProfileCount,omitempty"`
 }
 
 type ProfilePackageExportResult struct {
-	Cancelled    bool   `json:"cancelled"`
-	ZipPath      string `json:"zipPath"`
-	ProfileCount int    `json:"profileCount"`
-	FileCount    int    `json:"fileCount"`
-	Message      string `json:"message"`
+	Cancelled                   bool   `json:"cancelled"`
+	ZipPath                     string `json:"zipPath"`
+	ProfileCount                int    `json:"profileCount"`
+	FileCount                   int    `json:"fileCount"`
+	PortableSessionProfileCount int    `json:"portableSessionProfileCount,omitempty"`
+	PortableSessionWarning      string `json:"portableSessionWarning,omitempty"`
+	Message                     string `json:"message"`
+}
+
+type ProfilePackageExportOptions struct {
+	PortableSessionPassword string `json:"portableSessionPassword,omitempty"`
 }
 
 type ProfilePackageImportResult struct {
@@ -49,9 +57,10 @@ type ProfilePackageImportResult struct {
 }
 
 type ProfilePackageImportOptions struct {
-	Actions         []ProfilePackageImportAction `json:"actions,omitempty"`
-	ConflictMode    string                       `json:"conflictMode"`
-	ConfirmConflict bool                         `json:"confirmConflict"`
+	Actions                 []ProfilePackageImportAction `json:"actions,omitempty"`
+	ConflictMode            string                       `json:"conflictMode"`
+	ConfirmConflict         bool                         `json:"confirmConflict"`
+	PortableSessionPassword string                       `json:"portableSessionPassword,omitempty"`
 }
 
 type ProfilePackageImportAction struct {
@@ -94,14 +103,16 @@ type ProfilePackageImportPreviewProfile struct {
 }
 
 type ProfilePackageImportPreview struct {
-	Profiles      []ProfilePackageImportPreviewProfile `json:"profiles"`
-	Cancelled     bool                                 `json:"cancelled"`
-	ZipPath       string                               `json:"zipPath"`
-	ProfileCount  int                                  `json:"profileCount"`
-	ConflictCount int                                  `json:"conflictCount"`
-	CanOverwrite  bool                                 `json:"canOverwrite"`
-	Conflicts     []ProfilePackageImportConflict       `json:"conflicts"`
-	Message       string                               `json:"message"`
+	Profiles                    []ProfilePackageImportPreviewProfile `json:"profiles"`
+	Cancelled                   bool                                 `json:"cancelled"`
+	ZipPath                     string                               `json:"zipPath"`
+	ProfileCount                int                                  `json:"profileCount"`
+	ConflictCount               int                                  `json:"conflictCount"`
+	CanOverwrite                bool                                 `json:"canOverwrite"`
+	Conflicts                   []ProfilePackageImportConflict       `json:"conflicts"`
+	PortableSessionAvailable    bool                                 `json:"portableSessionAvailable"`
+	PortableSessionProfileCount int                                  `json:"portableSessionProfileCount"`
+	Message                     string                               `json:"message"`
 }
 
 const (
@@ -124,9 +135,10 @@ type preparedProfilePackageImport struct {
 }
 
 type profilePackageContents struct {
-	Reader           *zip.ReadCloser
-	Profiles         []browser.Profile
-	DatabaseSnapshot *ProfilePackageDatabase
+	Reader                 *zip.ReadCloser
+	Profiles               []browser.Profile
+	DatabaseSnapshot       *ProfilePackageDatabase
+	PortableSessionEntries map[string]*zip.File
 }
 
 type profilePackageConflictMatch struct {
@@ -150,6 +162,15 @@ type profilePackageDirectorySwap struct {
 
 // BrowserProfilePackageExport 导出选中的实例配置和浏览器用户数据目录。
 func (a *App) BrowserProfilePackageExport(profileIds []string) (ProfilePackageExportResult, error) {
+	return a.browserProfilePackageExportWithOptions(profileIds, ProfilePackageExportOptions{})
+}
+
+// BrowserProfilePackageExportWithOptions 导出实例，并可选择迁移密码保护的登录 Cookie。
+func (a *App) BrowserProfilePackageExportWithOptions(profileIds []string, options ProfilePackageExportOptions) (ProfilePackageExportResult, error) {
+	return a.browserProfilePackageExportWithOptions(profileIds, options)
+}
+
+func (a *App) browserProfilePackageExportWithOptions(profileIds []string, options ProfilePackageExportOptions) (ProfilePackageExportResult, error) {
 	a.maintenanceMu.Lock()
 	defer a.maintenanceMu.Unlock()
 
@@ -175,16 +196,28 @@ func (a *App) BrowserProfilePackageExport(profileIds []string) (ProfilePackageEx
 		return ProfilePackageExportResult{Cancelled: true, Message: "已取消导出"}, nil
 	}
 
-	fileCount, err := a.writeProfilePackage(savePath, profiles)
+	portableSessionPassword := options.PortableSessionPassword
+	if portableSessionPassword != "" {
+		if err := validatePortableSessionPassword(portableSessionPassword); err != nil {
+			return ProfilePackageExportResult{}, err
+		}
+	}
+	fileCount, portableSessionProfileCount, err := a.writeProfilePackageWithPortableSessions(savePath, profiles, portableSessionPassword)
 	if err != nil {
 		return ProfilePackageExportResult{}, err
 	}
+	portableSessionWarning := ""
+	if portableSessionPassword == "" {
+		portableSessionWarning = "未迁移跨电脑登录态；如需保留登录 Cookie，请使用登录态迁移密码导出。"
+	}
 	return ProfilePackageExportResult{
-		Cancelled:    false,
-		ZipPath:      savePath,
-		ProfileCount: len(profiles),
-		FileCount:    fileCount,
-		Message:      "导出完成",
+		Cancelled:                   false,
+		ZipPath:                     savePath,
+		ProfileCount:                len(profiles),
+		FileCount:                   fileCount,
+		PortableSessionProfileCount: portableSessionProfileCount,
+		PortableSessionWarning:      portableSessionWarning,
+		Message:                     "导出完成",
 	}, nil
 }
 
@@ -245,7 +278,7 @@ func (a *App) BrowserProfilePackagePrepareImportFromPath(zipPath string) (Profil
 func (a *App) BrowserProfilePackageImportWithOptions(zipPath string, options ProfilePackageImportOptions) (ProfilePackageImportResult, error) {
 	a.maintenanceMu.Lock()
 	defer a.maintenanceMu.Unlock()
-	return a.importProfilePackageFromPathWithModeAndActions(zipPath, options.ConflictMode, options.ConfirmConflict, options.Actions)
+	return a.importProfilePackageFromPathWithModeAndPortableSession(zipPath, options.ConflictMode, options.ConfirmConflict, options.Actions, options.PortableSessionPassword)
 }
 
 func (a *App) collectProfilesForPackage(profileIds []string) ([]browser.Profile, error) {
@@ -262,7 +295,7 @@ func (a *App) collectProfilesForPackage(profileIds []string) ([]browser.Profile,
 			missing = append(missing, id)
 			continue
 		}
-		if profile.Running {
+		if browserProfileHasRuntime(a, profile, a.browserMgr.BrowserProcesses[id]) {
 			running = append(running, profile.ProfileName)
 			continue
 		}
@@ -286,31 +319,50 @@ func (a *App) collectProfilesForPackage(profileIds []string) ([]browser.Profile,
 }
 
 func (a *App) writeProfilePackage(zipPath string, profiles []browser.Profile) (int, error) {
+	fileCount, _, err := a.writeProfilePackageWithPortableSessions(zipPath, profiles, "")
+	return fileCount, err
+}
+
+func (a *App) writeProfilePackageWithPortableSessions(zipPath string, profiles []browser.Profile, portableSessionPassword string) (int, int, error) {
 	databaseSnapshot, err := a.collectProfilePackageDatabase(profiles)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
+	}
+	var portableSessions map[string][]CookieInfo
+	if portableSessionPassword != "" {
+		portableSessions, err = a.collectPortableProfileSessions(profiles)
+		if err != nil {
+			return 0, 0, err
+		}
 	}
 	if err := os.MkdirAll(filepath.Dir(zipPath), 0o755); err != nil {
-		return 0, fmt.Errorf("创建导出目录失败: %w", err)
+		return 0, 0, fmt.Errorf("创建导出目录失败: %w", err)
 	}
 	tmpPath := zipPath + ".tmp"
 	_ = os.Remove(tmpPath)
 	out, err := os.Create(tmpPath)
 	if err != nil {
-		return 0, fmt.Errorf("创建导出文件失败: %w", err)
+		return 0, 0, fmt.Errorf("创建导出文件失败: %w", err)
 	}
 	zipWriter := zip.NewWriter(out)
 	fileCount := 0
+	portableSessionProfileCount := 0
 	var manifest ProfilePackageManifest
 
 	writeErr := func() error {
 		manifest = ProfilePackageManifest{
-			Format:          profilePackageFormat,
-			Version:         profilePackageVersion,
-			ExportedAt:      time.Now().Format(time.RFC3339),
-			ProfileCount:    len(profiles),
-			ProfileNames:    profilePackageProfileNames(profiles),
-			DatabaseVersion: databaseSnapshot.Version,
+			Format:                      profilePackageFormat,
+			Version:                     profilePackageVersion,
+			ExportedAt:                  time.Now().Format(time.RFC3339),
+			ProfileCount:                len(profiles),
+			ProfileNames:                profilePackageProfileNames(profiles),
+			DatabaseVersion:             databaseSnapshot.Version,
+			PortableSessionVersion:      0,
+			PortableSessionProfileCount: 0,
+		}
+		if portableSessionPassword != "" {
+			manifest.PortableSessionVersion = portableSessionVersion
+			manifest.PortableSessionProfileCount = len(portableSessions)
 		}
 		if err := writeProfilePackageJSON(zipWriter, "manifest.json", manifest); err != nil {
 			return err
@@ -320,6 +372,31 @@ func (a *App) writeProfilePackage(zipPath string, profiles []browser.Profile) (i
 			return err
 		}
 		fileCount++
+		extensionsByID := make(map[string]browser.Extension, len(databaseSnapshot.Extensions))
+		for _, extension := range databaseSnapshot.Extensions {
+			extensionsByID[backupImportIDKey(extension.ExtensionID)] = extension
+		}
+		for _, artifact := range databaseSnapshot.ExtensionArtifacts {
+			extension, exists := extensionsByID[backupImportIDKey(artifact.ExtensionID)]
+			if !exists {
+				continue
+			}
+			if archivePath := strings.TrimSpace(artifact.InstallDirArchivePath); archivePath != "" {
+				installDir := resolveProfilePackagePath(a, extension.InstallDir)
+				added, err := writeProfilePackageDir(zipWriter, installDir, archivePath)
+				if err != nil {
+					return fmt.Errorf("打包插件目录失败 [%s]: %w", extension.Name, err)
+				}
+				fileCount += added
+			}
+			if archivePath := strings.TrimSpace(artifact.PackageArchivePath); archivePath != "" {
+				packagePath := resolveProfilePackagePath(a, extension.PackagePath)
+				if err := writeProfilePackageFile(zipWriter, packagePath, archivePath); err != nil {
+					return fmt.Errorf("打包插件安装包失败 [%s]: %w", extension.Name, err)
+				}
+				fileCount++
+			}
+		}
 		if err := writeProfilePackageJSON(zipWriter, "profiles.json", profiles); err != nil {
 			return err
 		}
@@ -339,6 +416,26 @@ func (a *App) writeProfilePackage(zipPath string, profiles []browser.Profile) (i
 			}
 			fileCount += added
 		}
+		for _, profile := range profiles {
+			profileID := strings.TrimSpace(profile.ProfileId)
+			cookies, exists := portableSessions[profileID]
+			if !exists {
+				continue
+			}
+			encrypted, err := encryptPortableProfileSession(profileID, cookies, portableSessionPassword)
+			if err != nil {
+				return err
+			}
+			writer, err := zipWriter.Create(portableSessionArchivePath(profileID))
+			if err != nil {
+				return err
+			}
+			if _, err := writer.Write(encrypted); err != nil {
+				return err
+			}
+			fileCount++
+			portableSessionProfileCount++
+		}
 		return nil
 	}()
 
@@ -346,22 +443,22 @@ func (a *App) writeProfilePackage(zipPath string, profiles []browser.Profile) (i
 	closeFileErr := out.Close()
 	if writeErr != nil {
 		_ = os.Remove(tmpPath)
-		return 0, writeErr
+		return 0, 0, writeErr
 	}
 	if closeZipErr != nil {
 		_ = os.Remove(tmpPath)
-		return 0, closeZipErr
+		return 0, 0, closeZipErr
 	}
 	if closeFileErr != nil {
 		_ = os.Remove(tmpPath)
-		return 0, closeFileErr
+		return 0, 0, closeFileErr
 	}
 	if err := os.Rename(tmpPath, zipPath); err != nil {
 		_ = os.Remove(tmpPath)
-		return 0, fmt.Errorf("保存导出文件失败: %w", err)
+		return 0, 0, fmt.Errorf("保存导出文件失败: %w", err)
 	}
 	_, _ = backupWriteProfileMetadata(zipPath, manifest, fileCount, a.appName(), a.appVersion())
-	return fileCount, nil
+	return fileCount, portableSessionProfileCount, nil
 }
 
 func (a *App) importProfilePackageFromPath(zipPath string) (ProfilePackageImportResult, error) {
@@ -406,6 +503,27 @@ func openProfilePackageContents(zipPath string) (*profilePackageContents, error)
 		return nil, fmt.Errorf("实例包为空")
 	}
 	contents.Profiles = profiles
+	portableEntries := make(map[string]*zip.File)
+	portablePrefix := portableSessionDir + "/"
+	for _, file := range reader.File {
+		name := filepath.ToSlash(strings.TrimSpace(file.Name))
+		if !strings.HasPrefix(name, portablePrefix) || file.FileInfo().IsDir() {
+			continue
+		}
+		relative := strings.TrimPrefix(name, portablePrefix)
+		if relative == "" || strings.Contains(relative, "/") || !strings.HasSuffix(relative, ".json") {
+			return nil, fmt.Errorf("实例包包含非法登录态迁移文件: %s", name)
+		}
+		profileID := strings.TrimSuffix(relative, ".json")
+		if profileID == "" {
+			return nil, fmt.Errorf("实例包包含空的登录态迁移实例 ID")
+		}
+		if _, exists := portableEntries[profileID]; exists {
+			return nil, fmt.Errorf("实例包包含重复的登录态迁移文件: %s", profileID)
+		}
+		portableEntries[profileID] = file
+	}
+	contents.PortableSessionEntries = portableEntries
 	completed = true
 	return contents, nil
 }
@@ -429,14 +547,16 @@ func (a *App) prepareProfilePackageImportFromPath(zipPath string) (ProfilePackag
 		return ProfilePackageImportPreview{}, err
 	}
 	return ProfilePackageImportPreview{
-		Cancelled:     false,
-		ZipPath:       zipPath,
-		ProfileCount:  len(contents.Profiles),
-		ConflictCount: len(conflicts),
-		CanOverwrite:  canOverwrite,
-		Profiles:      profiles,
-		Conflicts:     conflicts,
-		Message:       profilePackageImportPreviewMessage(profiles, conflicts),
+		Cancelled:                   false,
+		ZipPath:                     zipPath,
+		ProfileCount:                len(contents.Profiles),
+		ConflictCount:               len(conflicts),
+		CanOverwrite:                canOverwrite,
+		Profiles:                    profiles,
+		Conflicts:                   conflicts,
+		PortableSessionAvailable:    len(contents.PortableSessionEntries) > 0,
+		PortableSessionProfileCount: len(contents.PortableSessionEntries),
+		Message:                     profilePackageImportPreviewMessage(profiles, conflicts),
 	}, nil
 }
 
@@ -558,6 +678,10 @@ func (a *App) importProfilePackageFromPathWithModeAndConfirmation(zipPath string
 }
 
 func (a *App) importProfilePackageFromPathWithModeAndActions(zipPath string, mode string, confirmConflict bool, actions []ProfilePackageImportAction) (ProfilePackageImportResult, error) {
+	return a.importProfilePackageFromPathWithModeAndPortableSession(zipPath, mode, confirmConflict, actions, "")
+}
+
+func (a *App) importProfilePackageFromPathWithModeAndPortableSession(zipPath string, mode string, confirmConflict bool, actions []ProfilePackageImportAction, portableSessionPassword string) (ProfilePackageImportResult, error) {
 	mode = normalizeProfilePackageImportMode(mode)
 	if mode == "" {
 		return ProfilePackageImportResult{}, fmt.Errorf("不支持的实例导入冲突处理方式")
@@ -572,6 +696,38 @@ func (a *App) importProfilePackageFromPathWithModeAndActions(zipPath string, mod
 	}
 	if a.browserMgr == nil {
 		return ProfilePackageImportResult{}, fmt.Errorf("浏览器管理器未初始化")
+	}
+	portableSessions := make(map[string][]CookieInfo, len(contents.PortableSessionEntries))
+	portableSessionWarnings := make([]string, 0)
+	if len(contents.PortableSessionEntries) > 0 {
+		if portableSessionPassword == "" {
+			return ProfilePackageImportResult{}, fmt.Errorf("该实例包包含密码保护的跨电脑登录态，请输入导出时设置的迁移密码")
+		}
+		for _, source := range contents.Profiles {
+			sourceID := strings.TrimSpace(source.ProfileId)
+			if sourceID == "" {
+				portableSessionWarnings = append(portableSessionWarnings, fmt.Sprintf("实例「%s」没有可匹配的登录态迁移文件", source.ProfileName))
+				continue
+			}
+			file, exists := contents.PortableSessionEntries[sourceID]
+			if !exists {
+				portableSessionWarnings = append(portableSessionWarnings, fmt.Sprintf("实例「%s」没有可迁移登录态", source.ProfileName))
+				continue
+			}
+			reader, openErr := file.Open()
+			if openErr != nil {
+				return ProfilePackageImportResult{}, fmt.Errorf("读取实例「%s」登录态迁移文件失败: %w", source.ProfileName, openErr)
+			}
+			cookies, readErr := readPortableProfileSessionFile(reader, file.UncompressedSize64, sourceID, portableSessionPassword)
+			closeErr := reader.Close()
+			if readErr != nil {
+				return ProfilePackageImportResult{}, fmt.Errorf("实例「%s」登录态迁移失败: %w", source.ProfileName, readErr)
+			}
+			if closeErr != nil {
+				return ProfilePackageImportResult{}, fmt.Errorf("关闭实例「%s」登录态迁移文件失败: %w", source.ProfileName, closeErr)
+			}
+			portableSessions[sourceID] = cookies
+		}
 	}
 	a.browserMgr.InitData()
 	existing, err := a.loadExistingProfilePackageProfiles()
@@ -619,7 +775,7 @@ func (a *App) importProfilePackageFromPathWithModeAndActions(zipPath string, mod
 	}
 	now := time.Now().Format(time.RFC3339)
 	mappings := make(map[string]string, len(contents.Profiles))
-	warnings := make([]string, 0)
+	warnings := append([]string{}, portableSessionWarnings...)
 	if contents.DatabaseSnapshot != nil {
 		warnings = append(warnings, contents.DatabaseSnapshot.Warnings...)
 	}
@@ -641,11 +797,15 @@ func (a *App) importProfilePackageFromPathWithModeAndActions(zipPath string, mod
 	stagingRoot := a.profilePackageImportStagingRoot(batchID)
 	swaps := make([]profilePackageDirectorySwap, 0, len(contents.Profiles))
 	originalProfiles := make(map[string]*browser.Profile, len(contents.Profiles))
+	createdExtensionPaths := make([]string, 0)
 	committed := false
 	defer func() {
 		_ = os.RemoveAll(stagingRoot)
 		if committed {
 			return
+		}
+		for index := len(createdExtensionPaths) - 1; index >= 0; index-- {
+			_ = os.RemoveAll(createdExtensionPaths[index])
 		}
 		rollbackProfilePackageDirectorySwaps(swaps)
 		if len(originalProfiles) == 0 {
@@ -815,6 +975,13 @@ func (a *App) importProfilePackageFromPathWithModeAndActions(zipPath string, mod
 		}
 		a.browserMgr.Mutex.Unlock()
 	}
+	if contents.DatabaseSnapshot != nil {
+		created, err := a.materializeProfilePackageExtensionArtifacts(contents.Reader.File, contents.DatabaseSnapshot, stagingRoot, &warnings)
+		createdExtensionPaths = append(createdExtensionPaths, created...)
+		if err != nil {
+			return ProfilePackageImportResult{}, err
+		}
+	}
 	for _, item := range prepared {
 		if !item.HasUserData {
 			continue
@@ -853,6 +1020,9 @@ func (a *App) importProfilePackageFromPathWithModeAndActions(zipPath string, mod
 		if err := a.browserMgr.SaveProfiles(); err != nil {
 			return ProfilePackageImportResult{}, err
 		}
+	}
+	if len(portableSessions) > 0 {
+		a.restorePortableProfileSessions(prepared, portableSessions, &warnings)
 	}
 	finalizeProfilePackageDirectorySwaps(swaps)
 	committed = true
@@ -991,15 +1161,16 @@ func findProfilePackageConflict(existing profilePackageExistingProfiles, source 
 }
 
 func profilePackageProfileIsRunning(a *App, profile browser.Profile) bool {
-	if profile.Running || profile.Pid > 0 || profile.DebugPort > 0 || profile.WindowMarkerCode != "" {
+	if profile.Running {
 		return true
 	}
 	if a == nil || a.browserMgr == nil {
-		return false
+		return profile.Running || profile.Pid > 0 || profile.DebugPort > 0 || profile.WindowMarkerCode != ""
 	}
 	a.browserMgr.Mutex.Lock()
-	defer a.browserMgr.Mutex.Unlock()
-	return a.browserMgr.BrowserProcesses[profile.ProfileId] != nil
+	trackedProcess := a.browserMgr.BrowserProcesses[profile.ProfileId]
+	a.browserMgr.Mutex.Unlock()
+	return browserProfileHasRuntime(a, &profile, trackedProcess)
 }
 
 func uniqueImportedProfileName(name string, reserved map[string]struct{}) string {
@@ -1064,6 +1235,204 @@ func (a *App) extractProfileUserDataToDir(files []*zip.File, oldProfileID string
 	return hasUserData, nil
 }
 
+func (a *App) materializeProfilePackageExtensionArtifacts(files []*zip.File, snapshot *ProfilePackageDatabase, stagingRoot string, warnings *[]string) ([]string, error) {
+	if snapshot == nil || len(snapshot.ExtensionArtifacts) == 0 {
+		return nil, nil
+	}
+
+	extensionIndexes := make(map[string]int, len(snapshot.Extensions))
+	for index, extension := range snapshot.Extensions {
+		extensionIndexes[backupImportIDKey(extension.ExtensionID)] = index
+	}
+	createdPaths := make([]string, 0, len(snapshot.ExtensionArtifacts)*2)
+	managedRoot := a.resolveAppPath("data/extensions")
+
+	for _, artifact := range snapshot.ExtensionArtifacts {
+		extensionIndex, exists := extensionIndexes[backupImportIDKey(artifact.ExtensionID)]
+		if !exists {
+			appendProfilePackageWarning(warnings, fmt.Sprintf("插件「%s」的文件索引没有对应插件记录，已跳过", artifact.ExtensionID))
+			continue
+		}
+		extension := &snapshot.Extensions[extensionIndex]
+		runtimeID := browser.NormalizeExtensionID(extension.ExtensionID)
+		if runtimeID == "" {
+			appendProfilePackageWarning(warnings, fmt.Sprintf("插件「%s」ID 无效，无法恢复插件文件", extension.ExtensionID))
+			continue
+		}
+
+		artifactRoot := filepath.Join(stagingRoot, "extensions", runtimeID)
+		stagedInstallDir := filepath.Join(artifactRoot, "install")
+		stagedPackagePath := filepath.Join(artifactRoot, "package.crx")
+		hasInstallDir, err := extractProfilePackageDirectory(files, artifact.InstallDirArchivePath, stagedInstallDir)
+		if err != nil {
+			return createdPaths, fmt.Errorf("解压插件目录失败(%s): %w", extension.ExtensionID, err)
+		}
+		hasPackage, err := extractProfilePackageArtifactFile(files, artifact.PackageArchivePath, stagedPackagePath)
+		if err != nil {
+			return createdPaths, fmt.Errorf("解压插件安装包失败(%s): %w", extension.ExtensionID, err)
+		}
+
+		targetInstallDir := filepath.Join(managedRoot, runtimeID)
+		targetPackagePath := filepath.Join(managedRoot, "packages", runtimeID+".crx")
+		if hasInstallDir {
+			created, err := materializeProfilePackageDirectory(stagedInstallDir, targetInstallDir)
+			if err != nil {
+				return createdPaths, fmt.Errorf("恢复插件目录失败(%s): %w", extension.ExtensionID, err)
+			}
+			if created {
+				createdPaths = append(createdPaths, targetInstallDir)
+			}
+			if _, err := os.Stat(targetInstallDir); err == nil {
+				extension.InstallDir = targetInstallDir
+			}
+		}
+		if hasPackage {
+			created, err := materializeProfilePackageFile(stagedPackagePath, targetPackagePath)
+			if err != nil {
+				return createdPaths, fmt.Errorf("恢复插件安装包失败(%s): %w", extension.ExtensionID, err)
+			}
+			if created {
+				createdPaths = append(createdPaths, targetPackagePath)
+			}
+			if _, err := os.Stat(targetPackagePath); err == nil {
+				extension.PackagePath = targetPackagePath
+			}
+		}
+		if !hasInstallDir && !hasPackage {
+			appendProfilePackageWarning(warnings, fmt.Sprintf("插件「%s」在实例包中没有可恢复的文件", extension.Name))
+		}
+	}
+	return createdPaths, nil
+}
+
+func extractProfilePackageDirectory(files []*zip.File, archivePath string, destDir string) (bool, error) {
+	archivePath = filepath.ToSlash(strings.TrimSuffix(strings.TrimSpace(archivePath), "/"))
+	if archivePath == "" {
+		return false, nil
+	}
+	if !isSafeProfilePackageRelativePath(archivePath) {
+		return false, fmt.Errorf("插件目录归档路径非法: %s", archivePath)
+	}
+	prefix := archivePath + "/"
+	hasFiles := false
+	for _, file := range files {
+		name := filepath.ToSlash(file.Name)
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		rel := strings.TrimPrefix(name, prefix)
+		if rel == "" {
+			continue
+		}
+		if !hasFiles {
+			if err := os.RemoveAll(destDir); err != nil {
+				return false, err
+			}
+			if err := os.MkdirAll(destDir, 0o755); err != nil {
+				return false, err
+			}
+			hasFiles = true
+		}
+		if err := extractProfilePackageFile(file, destDir, rel); err != nil {
+			return false, err
+		}
+	}
+	return hasFiles, nil
+}
+
+func extractProfilePackageArtifactFile(files []*zip.File, archivePath string, destPath string) (bool, error) {
+	archivePath = filepath.ToSlash(strings.TrimSpace(archivePath))
+	if archivePath == "" {
+		return false, nil
+	}
+	if !isSafeProfilePackageRelativePath(archivePath) {
+		return false, fmt.Errorf("插件安装包归档路径非法: %s", archivePath)
+	}
+	for _, file := range files {
+		if filepath.ToSlash(file.Name) != archivePath || file.FileInfo().IsDir() {
+			continue
+		}
+		if err := extractProfilePackageFile(file, filepath.Dir(destPath), filepath.Base(destPath)); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+func isSafeProfilePackageRelativePath(value string) bool {
+	clean := filepath.Clean(filepath.FromSlash(strings.TrimSpace(value)))
+	return clean != "." && !filepath.IsAbs(clean) && clean != ".." && !strings.HasPrefix(clean, ".."+string(filepath.Separator))
+}
+
+func materializeProfilePackageDirectory(stagingDir string, targetDir string) (bool, error) {
+	if _, err := os.Stat(targetDir); err == nil {
+		_ = os.RemoveAll(stagingDir)
+		return false, nil
+	} else if !os.IsNotExist(err) {
+		return false, err
+	}
+	if err := os.MkdirAll(filepath.Dir(targetDir), 0o755); err != nil {
+		return false, err
+	}
+	if err := os.Rename(stagingDir, targetDir); err == nil {
+		return true, nil
+	}
+	if err := copyProfilePackageDirectory(stagingDir, targetDir); err != nil {
+		_ = os.RemoveAll(targetDir)
+		return false, err
+	}
+	_ = os.RemoveAll(stagingDir)
+	return true, nil
+}
+
+func copyProfilePackageDirectory(srcDir string, destDir string) error {
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return err
+	}
+	return filepath.WalkDir(srcDir, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(srcDir, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		target := filepath.Join(destDir, rel)
+		if entry.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("插件目录包含不支持的符号链接: %s", rel)
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		return backupCopyFile(path, target)
+	})
+}
+
+func materializeProfilePackageFile(stagingPath string, targetPath string) (bool, error) {
+	if _, err := os.Stat(targetPath); err == nil {
+		_ = os.Remove(stagingPath)
+		return false, nil
+	} else if !os.IsNotExist(err) {
+		return false, err
+	}
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		return false, err
+	}
+	if err := backupCopyFile(stagingPath, targetPath); err != nil {
+		_ = os.Remove(targetPath)
+		return false, err
+	}
+	_ = os.Remove(stagingPath)
+	return true, nil
+}
+
 func writeProfilePackageJSON(zipWriter *zip.Writer, name string, value any) error {
 	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
@@ -1116,6 +1485,20 @@ func writeProfilePackageDir(zipWriter *zip.Writer, srcDir string, destPrefix str
 		return nil
 	})
 	return count, err
+}
+
+func writeProfilePackageFile(zipWriter *zip.Writer, srcPath string, destPath string) error {
+	file, err := os.Open(srcPath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	writer, err := zipWriter.Create(filepath.ToSlash(destPath))
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(writer, file)
+	return err
 }
 
 func readProfilePackageJSON(files []*zip.File, name string, target any) error {

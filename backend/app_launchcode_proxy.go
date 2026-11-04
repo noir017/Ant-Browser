@@ -18,10 +18,7 @@ func newAppProxyProvider(app *App) launchcode.ProxyProvider {
 	return appProxyProvider{app: app}
 }
 
-func (p appProxyProvider) ListProxyNodes() []BrowserProxy {
-	if p.app == nil || p.app.browserMgr == nil || p.app.config == nil {
-		return []BrowserProxy{}
-	}
+func (p appProxyProvider) ListProxyNodes() ([]BrowserProxy, error) {
 	return p.app.BrowserProxyList()
 }
 

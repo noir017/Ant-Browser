@@ -1,13 +1,15 @@
-﻿import { Button, FormItem, Input, Modal, Textarea } from '../../../../shared/components'
+﻿import { Button, FormItem, Input, Modal, Switch, Textarea } from '../../../../shared/components'
 import type { ProxyCheckSettings } from '../../types'
 
 interface ProxyPoolCheckSettingsModalProps {
   open: boolean
   checkSettings: ProxyCheckSettings
   checkTargetsText: string
+  filterAvailableOnly: boolean
   saving: boolean
   onClose: () => void
   onSave: () => void
+  onFilterAvailableOnlyChange: (checked: boolean) => void
   onCheckSettingsChange: (updater: (current: ProxyCheckSettings) => ProxyCheckSettings) => void
   onCheckTargetsTextChange: (value: string) => void
 }
@@ -16,9 +18,11 @@ export function ProxyPoolCheckSettingsModal({
   open,
   checkSettings,
   checkTargetsText,
+  filterAvailableOnly,
   saving,
   onClose,
   onSave,
+  onFilterAvailableOnlyChange,
   onCheckSettingsChange,
   onCheckTargetsTextChange,
 }: ProxyPoolCheckSettingsModalProps) {
@@ -36,11 +40,45 @@ export function ProxyPoolCheckSettingsModal({
       )}
     >
       <div className="space-y-4">
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] px-3 py-2">
+          <div className="min-w-0">
+            <div className="text-sm text-[var(--color-text-primary)]">仅显示可选</div>
+            <div className="text-xs text-[var(--color-text-muted)]">代理列表中只展示测速可用的节点（与表格“只展示可用”联动）</div>
+          </div>
+          <Switch checked={filterAvailableOnly} onChange={onFilterAvailableOnlyChange} />
+        </div>
         <FormItem label="桥接启动等待" hint="毫秒" >
           <Input
             type="number"
             value={checkSettings.bridgeStartTimeoutMs}
             onChange={(e) => onCheckSettingsChange(prev => ({ ...prev, bridgeStartTimeoutMs: Number(e.target.value) || 15000 }))}
+          />
+        </FormItem>
+        <FormItem label="成功节点重测间隔" hint="分钟">
+          <Input
+            type="number"
+            min={1}
+            max={1440}
+            value={checkSettings.speedIntervalMinutes}
+            onChange={(e) => onCheckSettingsChange(prev => ({ ...prev, speedIntervalMinutes: Number(e.target.value) || 30 }))}
+          />
+        </FormItem>
+        <FormItem label="失败重试间隔" hint="分钟">
+          <Input
+            type="number"
+            min={1}
+            max={1440}
+            value={checkSettings.failureRetryMinutes}
+            onChange={(e) => onCheckSettingsChange(prev => ({ ...prev, failureRetryMinutes: Number(e.target.value) || 5 }))}
+          />
+        </FormItem>
+        <FormItem label="测速并发上限" hint="手动测速最多同时运行的代理数">
+          <Input
+            type="number"
+            min={1}
+            max={10}
+            value={checkSettings.speedConcurrency}
+            onChange={(e) => onCheckSettingsChange(prev => ({ ...prev, speedConcurrency: Number(e.target.value) || 5 }))}
           />
         </FormItem>
         <FormItem label="测速目标 ID">

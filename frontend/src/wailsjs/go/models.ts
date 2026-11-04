@@ -1,15 +1,15 @@
 export namespace automation {
-
+	
 	export class ScriptPublicAPIVariable {
 	    name: string;
 	    defaultValue: string;
 	    description: string;
 	    required: boolean;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ScriptPublicAPIVariable(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -28,11 +28,11 @@ export namespace automation {
 	    requestBodyText: string;
 	    responseBodyText: string;
 	    variables: ScriptPublicAPIVariable[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ScriptPublicAPIConfig(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.enabled = source["enabled"];
@@ -45,7 +45,7 @@ export namespace automation {
 	        this.responseBodyText = source["responseBodyText"];
 	        this.variables = this.convertValues(source["variables"], ScriptPublicAPIVariable);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -64,18 +64,18 @@ export namespace automation {
 		    return a;
 		}
 	}
-
+	
 	export class ScriptSource {
 	    type: string;
 	    uri: string;
 	    ref: string;
 	    path: string;
 	    importedAt: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ScriptSource(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.type = source["type"];
@@ -92,11 +92,11 @@ export namespace automation {
 	    groupId: string;
 	    keywords: string[];
 	    tags: string[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ScriptTargetSelector(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.code = source["code"];
@@ -112,11 +112,11 @@ export namespace automation {
 	    selector: ScriptTargetSelector;
 	    templateSelector: ScriptTargetSelector;
 	    createNameTemplate: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ScriptTargetConfig(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.mode = source["mode"];
@@ -124,7 +124,7 @@ export namespace automation {
 	        this.templateSelector = this.convertValues(source["templateSelector"], ScriptTargetSelector);
 	        this.createNameTemplate = source["createNameTemplate"];
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -162,11 +162,11 @@ export namespace automation {
 	    source: ScriptSource;
 	    createdAt: string;
 	    updatedAt: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ScriptRecord(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.packageFormat = source["packageFormat"];
@@ -188,7 +188,7 @@ export namespace automation {
 	        this.createdAt = source["createdAt"];
 	        this.updatedAt = source["updatedAt"];
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -220,11 +220,11 @@ export namespace automation {
 	    startedAt: string;
 	    finishedAt: string;
 	    durationMs: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ScriptRunRecord(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -250,11 +250,11 @@ export namespace automation {
 	    useScriptSelector: boolean;
 	    useScriptParams: boolean;
 	    timeoutMs?: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ScriptRunRequest(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.scriptId = source["scriptId"];
@@ -267,21 +267,21 @@ export namespace automation {
 	        this.timeoutMs = source["timeoutMs"];
 	    }
 	}
-
-
+	
+	
 
 }
 
 export namespace backend {
-
+	
 	export class AutomationScriptImportIssue {
 	    path: string;
 	    message: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new AutomationScriptImportIssue(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.path = source["path"];
@@ -292,18 +292,18 @@ export namespace backend {
 	    imported: automation.ScriptRecord[];
 	    failed: AutomationScriptImportIssue[];
 	    scanned: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new AutomationScriptBatchImportResult(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.imported = this.convertValues(source["imported"], automation.ScriptRecord);
 	        this.failed = this.convertValues(source["failed"], AutomationScriptImportIssue);
 	        this.scanned = source["scanned"];
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -322,7 +322,7 @@ export namespace backend {
 		    return a;
 		}
 	}
-
+	
 	export class AutomationScriptPublicAPIInvokeInput {
 	    url: string;
 	    method: string;
@@ -330,11 +330,11 @@ export namespace backend {
 	    apiKey: string;
 	    authHeader: string;
 	    timeoutMs: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new AutomationScriptPublicAPIInvokeInput(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.url = source["url"];
@@ -351,11 +351,11 @@ export namespace backend {
 	    statusText: string;
 	    bodyText: string;
 	    bodyJson: any;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new AutomationScriptPublicAPIInvokeResult(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.ok = source["ok"];
@@ -379,11 +379,11 @@ export namespace backend {
 	    packageType?: string;
 	    profileCount?: number;
 	    profileNames?: string[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new BackupLocalHistoryItem(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -403,11 +403,11 @@ export namespace backend {
 	}
 	export class BackupLocalSettings {
 	    localDirectory: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new BackupLocalSettings(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.localDirectory = source["localDirectory"];
@@ -416,11 +416,11 @@ export namespace backend {
 	export class BackupSelectLocalDirectoryResult {
 	    cancelled: boolean;
 	    localDirectory: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new BackupSelectLocalDirectoryResult(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.cancelled = source["cancelled"];
@@ -434,11 +434,11 @@ export namespace backend {
 	    failed: number;
 	    skippedList: string[];
 	    failedList: string[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new BookmarkSyncResult(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.total = source["total"];
@@ -452,11 +452,11 @@ export namespace backend {
 	export class BrowserCoreBackendOption {
 	    value: string;
 	    label: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new BrowserCoreBackendOption(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.value = source["value"];
@@ -468,11 +468,11 @@ export namespace backend {
 	    filePath: string;
 	    sizeBytes: number;
 	    updatedAt: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new BrowserExtensionManualDownloadFile(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.fileName = source["fileName"];
@@ -487,11 +487,11 @@ export namespace backend {
 	    downloadUrl: string;
 	    downloadDir: string;
 	    fileName: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new BrowserExtensionManualInstallGuide(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.extensionId = source["extensionId"];
@@ -505,11 +505,11 @@ export namespace backend {
 	    query: string;
 	    useProxy: boolean;
 	    proxyConfig: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new BrowserExtensionWebStoreRequest(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.query = source["query"];
@@ -524,11 +524,11 @@ export namespace backend {
 	    runtimeArg: string;
 	    action: string;
 	    note: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new BrowserFingerprintCapabilityRow(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.capability = source["capability"];
@@ -551,11 +551,11 @@ export namespace backend {
 	    launchArgs: string[];
 	    rows: BrowserFingerprintCapabilityRow[];
 	    warnings: string[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new BrowserFingerprintCapabilityReport(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.profileId = source["profileId"];
@@ -570,7 +570,7 @@ export namespace backend {
 	        this.rows = this.convertValues(source["rows"], BrowserFingerprintCapabilityRow);
 	        this.warnings = source["warnings"];
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -589,7 +589,7 @@ export namespace backend {
 		    return a;
 		}
 	}
-
+	
 	export class BrowserFingerprintExpectedInfo {
 	    language: string;
 	    acceptLanguage: string;
@@ -614,11 +614,11 @@ export namespace backend {
 	    fontList: string;
 	    webglVendor: string;
 	    webglRenderer: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new BrowserFingerprintExpectedInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.language = source["language"];
@@ -673,11 +673,11 @@ export namespace backend {
 	    audioHash: string;
 	    clientRectsHash: string;
 	    plugins: string[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new BrowserFingerprintRuntimeInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.language = source["language"];
@@ -712,18 +712,18 @@ export namespace backend {
 	    profileId: string;
 	    runtime: BrowserFingerprintRuntimeInfo;
 	    expected: BrowserFingerprintExpectedInfo;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new BrowserFingerprintCheckResult(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.profileId = source["profileId"];
 	        this.runtime = this.convertValues(source["runtime"], BrowserFingerprintRuntimeInfo);
 	        this.expected = this.convertValues(source["expected"], BrowserFingerprintExpectedInfo);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -742,32 +742,60 @@ export namespace backend {
 		    return a;
 		}
 	}
-
-
+	
+	
 	export class CookieInfo {
 	    name: string;
 	    value: string;
 	    domain: string;
 	    path: string;
+	    url?: string;
 	    expires: number;
 	    httpOnly: boolean;
 	    secure: boolean;
 	    sameSite: string;
-
+	    priority?: string;
+	    sameParty?: boolean;
+	    sourceScheme?: string;
+	    sourcePort?: number;
+	    hostOnly?: boolean;
+	    session?: boolean;
+	    partitionKey?: number[];
+	
 	    static createFrom(source: any = {}) {
 	        return new CookieInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
 	        this.value = source["value"];
 	        this.domain = source["domain"];
 	        this.path = source["path"];
+	        this.url = source["url"];
 	        this.expires = source["expires"];
 	        this.httpOnly = source["httpOnly"];
 	        this.secure = source["secure"];
 	        this.sameSite = source["sameSite"];
+	        this.priority = source["priority"];
+	        this.sameParty = source["sameParty"];
+	        this.sourceScheme = source["sourceScheme"];
+	        this.sourcePort = source["sourcePort"];
+	        this.hostOnly = source["hostOnly"];
+	        this.session = source["session"];
+	        this.partitionKey = source["partitionKey"];
+	    }
+	}
+	export class ProfilePackageExportOptions {
+	    portableSessionPassword?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProfilePackageExportOptions(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.portableSessionPassword = source["portableSessionPassword"];
 	    }
 	}
 	export class ProfilePackageExportResult {
@@ -775,18 +803,22 @@ export namespace backend {
 	    zipPath: string;
 	    profileCount: number;
 	    fileCount: number;
+	    portableSessionProfileCount?: number;
+	    portableSessionWarning?: string;
 	    message: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ProfilePackageExportResult(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.cancelled = source["cancelled"];
 	        this.zipPath = source["zipPath"];
 	        this.profileCount = source["profileCount"];
 	        this.fileCount = source["fileCount"];
+	        this.portableSessionProfileCount = source["portableSessionProfileCount"];
+	        this.portableSessionWarning = source["portableSessionWarning"];
 	        this.message = source["message"];
 	    }
 	}
@@ -795,11 +827,11 @@ export namespace backend {
 	    sourceIndex: number;
 	    mode: string;
 	    profileName: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ProfilePackageImportAction(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.sourceProfileId = source["sourceProfileId"];
@@ -820,11 +852,11 @@ export namespace backend {
 	    targetMatches: number;
 	    sourceTargetCollision: boolean;
 	    sourceNameCollision: boolean;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ProfilePackageImportConflict(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.sourceProfileId = source["sourceProfileId"];
@@ -844,18 +876,20 @@ export namespace backend {
 	    actions?: ProfilePackageImportAction[];
 	    conflictMode: string;
 	    confirmConflict: boolean;
-
+	    portableSessionPassword?: string;
+	
 	    static createFrom(source: any = {}) {
 	        return new ProfilePackageImportOptions(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.actions = this.convertValues(source["actions"], ProfilePackageImportAction);
 	        this.conflictMode = source["conflictMode"];
 	        this.confirmConflict = source["confirmConflict"];
+	        this.portableSessionPassword = source["portableSessionPassword"];
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -890,11 +924,11 @@ export namespace backend {
 	    suggestedAction: string;
 	    suggestedProfileName: string;
 	    canOverwrite: boolean;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ProfilePackageImportPreviewProfile(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.sourceIndex = source["sourceIndex"];
@@ -922,12 +956,14 @@ export namespace backend {
 	    conflictCount: number;
 	    canOverwrite: boolean;
 	    conflicts: ProfilePackageImportConflict[];
+	    portableSessionAvailable: boolean;
+	    portableSessionProfileCount: number;
 	    message: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ProfilePackageImportPreview(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.profiles = this.convertValues(source["profiles"], ProfilePackageImportPreviewProfile);
@@ -937,9 +973,11 @@ export namespace backend {
 	        this.conflictCount = source["conflictCount"];
 	        this.canOverwrite = source["canOverwrite"];
 	        this.conflicts = this.convertValues(source["conflicts"], ProfilePackageImportConflict);
+	        this.portableSessionAvailable = source["portableSessionAvailable"];
+	        this.portableSessionProfileCount = source["portableSessionProfileCount"];
 	        this.message = source["message"];
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -958,7 +996,7 @@ export namespace backend {
 		    return a;
 		}
 	}
-
+	
 	export class ProfilePackageImportResult {
 	    renamedCount: number;
 	    cancelled: boolean;
@@ -968,11 +1006,11 @@ export namespace backend {
 	    profileMappings: Record<string, string>;
 	    warnings: string[];
 	    message: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ProfilePackageImportResult(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.renamedCount = source["renamedCount"];
@@ -992,11 +1030,11 @@ export namespace backend {
 	    socksUrl: string;
 	    latencyMs: number;
 	    error: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ProxyBridgeWarmupResult(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.proxyId = source["proxyId"];
@@ -1012,11 +1050,11 @@ export namespace backend {
 	    urls: string[];
 	    concurrency: number;
 	    timeoutMs: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ProxyBrowserProbeRequest(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.proxyId = source["proxyId"];
@@ -1036,11 +1074,11 @@ export namespace backend {
 	    failed: number;
 	    concurrency: number;
 	    error: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ProxyBrowserProbeResult(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.proxyId = source["proxyId"];
@@ -1067,11 +1105,11 @@ export namespace backend {
 	    installDir: string;
 	    binaryName: string;
 	    message: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ProxyCoreDownloadInfoResult(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.core = source["core"];
@@ -1093,11 +1131,11 @@ export namespace backend {
 	    goarch: string;
 	    proxyConfig: string;
 	    version: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ProxyCoreDownloadRequest(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.core = source["core"];
@@ -1117,11 +1155,11 @@ export namespace backend {
 	    binaryPath: string;
 	    source: string;
 	    message: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ProxyCoreStatusResult(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.core = source["core"];
@@ -1150,11 +1188,11 @@ export namespace backend {
 	    asOrganization: string;
 	    rawData: Record<string, any>;
 	    updatedAt: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ProxyIPHealthResult(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.proxyId = source["proxyId"];
@@ -1177,11 +1215,11 @@ export namespace backend {
 	    label: string;
 	    timezone: string;
 	    lang: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ProxyLocationOption(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.label = source["label"];
@@ -1204,11 +1242,11 @@ export namespace backend {
 	    health?: ProxyIPHealthResult;
 	    alternates?: ProxyLocationOption[];
 	    resolvedAt: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ProxyLocationResolveResult(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.proxyId = source["proxyId"];
@@ -1226,7 +1264,7 @@ export namespace backend {
 	        this.alternates = this.convertValues(source["alternates"], ProxyLocationOption);
 	        this.resolvedAt = source["resolvedAt"];
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -1245,17 +1283,45 @@ export namespace backend {
 		    return a;
 		}
 	}
+	export class ProxySourceRefreshResult {
+	    sourceId: string;
+	    sourceUrl: string;
+	    fetched: number;
+	    nameMatched: number;
+	    countryMatched: number;
+	    added: number;
+	    markedMissing: number;
+	    total: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProxySourceRefreshResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sourceId = source["sourceId"];
+	        this.sourceUrl = source["sourceUrl"];
+	        this.fetched = source["fetched"];
+	        this.nameMatched = source["nameMatched"];
+	        this.countryMatched = source["countryMatched"];
+	        this.added = source["added"];
+	        this.markedMissing = source["markedMissing"];
+	        this.total = source["total"];
+	    }
+	}
 	export class ProxyTestResult {
 	    proxyId: string;
 	    ok: boolean;
 	    latencyMs: number;
 	    engine: string;
 	    error: string;
-
+	    fingerprint: string;
+	    testedAt: string;
+	
 	    static createFrom(source: any = {}) {
 	        return new ProxyTestResult(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.proxyId = source["proxyId"];
@@ -1263,20 +1329,121 @@ export namespace backend {
 	        this.latencyMs = source["latencyMs"];
 	        this.engine = source["engine"];
 	        this.error = source["error"];
+	        this.fingerprint = source["fingerprint"];
+	        this.testedAt = source["testedAt"];
 	    }
 	}
 	export class ProxyValidationResult {
 	    supported: boolean;
 	    errorMsg: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ProxyValidationResult(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.supported = source["supported"];
 	        this.errorMsg = source["errorMsg"];
+	    }
+	}
+	export class ProxyVirtualGroupMemberHealth {
+	    proxyId: string;
+	    proxyName: string;
+	    groupName: string;
+	    state: string;
+	    latencyMs: number;
+	    lastProbeAt: string;
+	    lastError: string;
+	    active: boolean;
+	    preferred: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProxyVirtualGroupMemberHealth(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.proxyId = source["proxyId"];
+	        this.proxyName = source["proxyName"];
+	        this.groupName = source["groupName"];
+	        this.state = source["state"];
+	        this.latencyMs = source["latencyMs"];
+	        this.lastProbeAt = source["lastProbeAt"];
+	        this.lastError = source["lastError"];
+	        this.active = source["active"];
+	        this.preferred = source["preferred"];
+	    }
+	}
+	export class ProxyVirtualGroupHealth {
+	    groupId: string;
+	    groupName: string;
+	    strategy: string;
+	    activeProxyId: string;
+	    preferredProxyId: string;
+	    total: number;
+	    healthy: number;
+	    suspect: number;
+	    degraded: number;
+	    allDegraded: boolean;
+	    members: ProxyVirtualGroupMemberHealth[];
+	    updatedAt: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProxyVirtualGroupHealth(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.groupId = source["groupId"];
+	        this.groupName = source["groupName"];
+	        this.strategy = source["strategy"];
+	        this.activeProxyId = source["activeProxyId"];
+	        this.preferredProxyId = source["preferredProxyId"];
+	        this.total = source["total"];
+	        this.healthy = source["healthy"];
+	        this.suspect = source["suspect"];
+	        this.degraded = source["degraded"];
+	        this.allDegraded = source["allDegraded"];
+	        this.members = this.convertValues(source["members"], ProxyVirtualGroupMemberHealth);
+	        this.updatedAt = source["updatedAt"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	export class ProxyVirtualGroupProbeResult {
+	    groupId: string;
+	    tested: number;
+	    healthy: number;
+	    degraded: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProxyVirtualGroupProbeResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.groupId = source["groupId"];
+	        this.tested = source["tested"];
+	        this.healthy = source["healthy"];
+	        this.degraded = source["degraded"];
 	    }
 	}
 	export class SnapshotInfo {
@@ -1286,11 +1453,11 @@ export namespace backend {
 	    sizeMB: number;
 	    createdAt: string;
 	    filePath?: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new SnapshotInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.snapshotId = source["snapshotId"];
@@ -1305,7 +1472,7 @@ export namespace backend {
 }
 
 export namespace backup {
-
+	
 	export class ManifestEntry {
 	    id: string;
 	    category: string;
@@ -1317,11 +1484,11 @@ export namespace backup {
 	    byteSize?: number;
 	    sha256?: string;
 	    description?: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ManifestEntry(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -1339,11 +1506,11 @@ export namespace backup {
 	export class ManifestAppInfo {
 	    name: string;
 	    version: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ManifestAppInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -1356,11 +1523,11 @@ export namespace backup {
 	    createdAt: string;
 	    app: ManifestAppInfo;
 	    entries: ManifestEntry[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new Manifest(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.format = source["format"];
@@ -1369,7 +1536,7 @@ export namespace backup {
 	        this.app = this.convertValues(source["app"], ManifestAppInfo);
 	        this.entries = this.convertValues(source["entries"], ManifestEntry);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -1388,8 +1555,8 @@ export namespace backup {
 		    return a;
 		}
 	}
-
-
+	
+	
 	export class ScopeEntry {
 	    id: string;
 	    category: string;
@@ -1400,11 +1567,11 @@ export namespace backup {
 	    archivePath: string;
 	    exists: boolean;
 	    description?: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ScopeEntry(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -1423,11 +1590,11 @@ export namespace backup {
 	    manifestVersion: number;
 	    appRoot: string;
 	    entries: ScopeEntry[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new Scope(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.format = source["format"];
@@ -1435,7 +1602,7 @@ export namespace backup {
 	        this.appRoot = source["appRoot"];
 	        this.entries = this.convertValues(source["entries"], ScopeEntry);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -1458,17 +1625,17 @@ export namespace backup {
 }
 
 export namespace browser {
-
+	
 	export class CoreExtendedInfo {
 	    coreId: string;
 	    chromeVersion: string;
 	    instanceCount: number;
 	    coreBackend: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new CoreExtendedInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.coreId = source["coreId"];
@@ -1484,11 +1651,11 @@ export namespace browser {
 	    isDefault: boolean;
 	    coreBackend: string;
 	    coreEnv: string[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new CoreInput(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.coreId = source["coreId"];
@@ -1502,11 +1669,11 @@ export namespace browser {
 	export class CoreValidateResult {
 	    valid: boolean;
 	    message: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new CoreValidateResult(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.valid = source["valid"];
@@ -1529,11 +1696,11 @@ export namespace browser {
 	    defaultInstall: boolean;
 	    installedAt: string;
 	    updatedAt: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new Extension(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.extensionId = source["extensionId"];
@@ -1561,11 +1728,11 @@ export namespace browser {
 	    storeUrl: string;
 	    installable: boolean;
 	    message: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ExtensionLookupResult(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.extensionId = source["extensionId"];
@@ -1584,11 +1751,11 @@ export namespace browser {
 	    sortOrder: number;
 	    createdAt: string;
 	    updatedAt: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new Group(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.groupId = source["groupId"];
@@ -1603,11 +1770,11 @@ export namespace browser {
 	    groupName: string;
 	    parentId: string;
 	    sortOrder: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new GroupInput(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.groupName = source["groupName"];
@@ -1623,11 +1790,11 @@ export namespace browser {
 	    createdAt: string;
 	    updatedAt: string;
 	    instanceCount: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new GroupWithCount(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.groupId = source["groupId"];
@@ -1646,8 +1813,10 @@ export namespace browser {
 	    coreId: string;
 	    restoreLastSession: string;
 	    fingerprintArgs: string[];
+	    proxyMode: string;
 	    proxyId: string;
 	    proxyConfig: string;
+	    proxyGroupName: string;
 	    proxyBindSourceId: string;
 	    proxyBindSourceUrl: string;
 	    proxyBindName: string;
@@ -1671,11 +1840,11 @@ export namespace browser {
 	    deletedAt: string;
 	    lastStartAt: string;
 	    lastStopAt: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new Profile(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.profileId = source["profileId"];
@@ -1684,8 +1853,10 @@ export namespace browser {
 	        this.coreId = source["coreId"];
 	        this.restoreLastSession = source["restoreLastSession"];
 	        this.fingerprintArgs = source["fingerprintArgs"];
+	        this.proxyMode = source["proxyMode"];
 	        this.proxyId = source["proxyId"];
 	        this.proxyConfig = source["proxyConfig"];
+	        this.proxyGroupName = source["proxyGroupName"];
 	        this.proxyBindSourceId = source["proxyBindSourceId"];
 	        this.proxyBindSourceUrl = source["proxyBindSourceUrl"];
 	        this.proxyBindName = source["proxyBindName"];
@@ -1714,11 +1885,11 @@ export namespace browser {
 	export class ProfileCopyOptions {
 	    mode: string;
 	    automationTargets: string[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ProfileCopyOptions(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.mode = source["mode"];
@@ -1730,11 +1901,11 @@ export namespace browser {
 	    configured: boolean;
 	    extensionIds: string[];
 	    updatedAt: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ProfileExtensionSettings(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.profileId = source["profileId"];
@@ -1749,18 +1920,20 @@ export namespace browser {
 	    coreId: string;
 	    restoreLastSession: string;
 	    fingerprintArgs: string[];
+	    proxyMode: string;
 	    proxyId: string;
 	    proxyConfig: string;
+	    proxyGroupName: string;
 	    memoryLimitMb: number;
 	    launchArgs: string[];
 	    tags: string[];
 	    keywords: string[];
 	    groupId: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ProfileInput(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.profileName = source["profileName"];
@@ -1768,8 +1941,10 @@ export namespace browser {
 	        this.coreId = source["coreId"];
 	        this.restoreLastSession = source["restoreLastSession"];
 	        this.fingerprintArgs = source["fingerprintArgs"];
+	        this.proxyMode = source["proxyMode"];
 	        this.proxyId = source["proxyId"];
 	        this.proxyConfig = source["proxyConfig"];
+	        this.proxyGroupName = source["proxyGroupName"];
 	        this.memoryLimitMb = source["memoryLimitMb"];
 	        this.launchArgs = source["launchArgs"];
 	        this.tags = source["tags"];
@@ -1786,12 +1961,13 @@ export namespace browser {
 	    restoreLastSession: boolean;
 	    startReadyTimeoutMs: number;
 	    startStableWindowMs: number;
+	    maxConcurrentInstances: number;
 	    defaultConnectorType: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new Settings(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.userDataRoot = source["userDataRoot"];
@@ -1802,6 +1978,7 @@ export namespace browser {
 	        this.restoreLastSession = source["restoreLastSession"];
 	        this.startReadyTimeoutMs = source["startReadyTimeoutMs"];
 	        this.startStableWindowMs = source["startStableWindowMs"];
+	        this.maxConcurrentInstances = source["maxConcurrentInstances"];
 	        this.defaultConnectorType = source["defaultConnectorType"];
 	    }
 	}
@@ -1810,11 +1987,11 @@ export namespace browser {
 	    title: string;
 	    url: string;
 	    active: boolean;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new Tab(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.tabId = source["tabId"];
@@ -1827,16 +2004,16 @@ export namespace browser {
 }
 
 export namespace config {
-
+	
 	export class BrowserBookmark {
 	    name: string;
 	    url: string;
 	    openOnStart: boolean;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new BrowserBookmark(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -1851,11 +2028,11 @@ export namespace config {
 	    isDefault: boolean;
 	    coreBackend?: string;
 	    coreEnv?: string[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new BrowserCore(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.coreId = source["coreId"];
@@ -1880,15 +2057,22 @@ export namespace config {
 	    sourceAutoRefresh?: boolean;
 	    sourceRefreshIntervalM?: number;
 	    sourceLastRefreshAt?: string;
+	    sourceFetchProxyId?: string;
+	    sourceLastRefreshError?: string;
+	    sourceMissing?: boolean;
+	    sourceMissingSince?: string;
 	    lastLatencyMs: number;
 	    lastTestOk: boolean;
 	    lastTestedAt: string;
+	    lastTestEngine?: string;
+	    lastTestConnectorType?: string;
+	    speedTestFingerprint: string;
 	    lastIPHealthJson?: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new BrowserProxy(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.proxyId = source["proxyId"];
@@ -1904,10 +2088,47 @@ export namespace config {
 	        this.sourceAutoRefresh = source["sourceAutoRefresh"];
 	        this.sourceRefreshIntervalM = source["sourceRefreshIntervalM"];
 	        this.sourceLastRefreshAt = source["sourceLastRefreshAt"];
+	        this.sourceFetchProxyId = source["sourceFetchProxyId"];
+	        this.sourceLastRefreshError = source["sourceLastRefreshError"];
+	        this.sourceMissing = source["sourceMissing"];
+	        this.sourceMissingSince = source["sourceMissingSince"];
 	        this.lastLatencyMs = source["lastLatencyMs"];
 	        this.lastTestOk = source["lastTestOk"];
 	        this.lastTestedAt = source["lastTestedAt"];
+	        this.lastTestEngine = source["lastTestEngine"];
+	        this.lastTestConnectorType = source["lastTestConnectorType"];
+	        this.speedTestFingerprint = source["speedTestFingerprint"];
 	        this.lastIPHealthJson = source["lastIPHealthJson"];
+	    }
+	}
+	export class BrowserProxyVirtualGroup {
+	    groupId: string;
+	    groupName: string;
+	    strategy?: string;
+	    selectedProxyId?: string;
+	    preferredProxyId?: string;
+	    memberProxyIds?: string[];
+	    memberGroupNames?: string[];
+	    sortOrder?: number;
+	    createdAt?: string;
+	    updatedAt?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new BrowserProxyVirtualGroup(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.groupId = source["groupId"];
+	        this.groupName = source["groupName"];
+	        this.strategy = source["strategy"];
+	        this.selectedProxyId = source["selectedProxyId"];
+	        this.preferredProxyId = source["preferredProxyId"];
+	        this.memberProxyIds = source["memberProxyIds"];
+	        this.memberGroupNames = source["memberGroupNames"];
+	        this.sortOrder = source["sortOrder"];
+	        this.createdAt = source["createdAt"];
+	        this.updatedAt = source["updatedAt"];
 	    }
 	}
 	export class ProxyCheckTarget {
@@ -1918,11 +2139,11 @@ export namespace config {
 	    parser?: string;
 	    timeoutMs?: number;
 	    expectedStatus?: number[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ProxyCheckTarget(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -1935,23 +2156,43 @@ export namespace config {
 	    }
 	}
 	export class ProxyCheckConfig {
+	    speedIntervalMinutes: number;
 	    bridgeStartTimeoutMs: number;
+	    failureRetryMinutes: number;
+	    speedConcurrency: number;
 	    speedTargetId: string;
 	    ipHealthTargetId: string;
 	    targets: ProxyCheckTarget[];
-
+	    virtualGroupHealthEnabled?: boolean;
+	    virtualGroupProbeIntervalMinutes: number;
+	    degradeFailureThreshold: number;
+	    restoreSuccessThreshold: number;
+	    runtimeFailoverEnabled?: boolean;
+	    runtimeFailoverCooldownMinutes: number;
+	    runtimeFailoverMaxAttempts: number;
+	
 	    static createFrom(source: any = {}) {
 	        return new ProxyCheckConfig(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.speedIntervalMinutes = source["speedIntervalMinutes"];
 	        this.bridgeStartTimeoutMs = source["bridgeStartTimeoutMs"];
+	        this.failureRetryMinutes = source["failureRetryMinutes"];
+	        this.speedConcurrency = source["speedConcurrency"];
 	        this.speedTargetId = source["speedTargetId"];
 	        this.ipHealthTargetId = source["ipHealthTargetId"];
 	        this.targets = this.convertValues(source["targets"], ProxyCheckTarget);
+	        this.virtualGroupHealthEnabled = source["virtualGroupHealthEnabled"];
+	        this.virtualGroupProbeIntervalMinutes = source["virtualGroupProbeIntervalMinutes"];
+	        this.degradeFailureThreshold = source["degradeFailureThreshold"];
+	        this.restoreSuccessThreshold = source["restoreSuccessThreshold"];
+	        this.runtimeFailoverEnabled = source["runtimeFailoverEnabled"];
+	        this.runtimeFailoverCooldownMinutes = source["runtimeFailoverCooldownMinutes"];
+	        this.runtimeFailoverMaxAttempts = source["runtimeFailoverMaxAttempts"];
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -1974,18 +2215,18 @@ export namespace config {
 }
 
 export namespace launchcode {
-
+	
 	export class LaunchRequestParams {
 	    launchArgs: string[];
 	    startUrls: string[];
 	    skipDefaultStartUrls: boolean;
 	    proxyId: string;
 	    proxyConfig: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new LaunchRequestParams(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.launchArgs = source["launchArgs"];
@@ -1999,18 +2240,18 @@ export namespace launchcode {
 }
 
 export namespace logger {
-
+	
 	export class MemoryLogEntry {
 	    time: string;
 	    level: string;
 	    component: string;
 	    message: string;
 	    fields?: Record<string, any>;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new MemoryLogEntry(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.time = source["time"];
@@ -2021,22 +2262,22 @@ export namespace logger {
 	    }
 	}
 	export class MethodInterceptor {
-
-
+	
+	
 	    static createFrom(source: any = {}) {
 	        return new MethodInterceptor(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-
+	
 	    }
 	}
 
 }
 
 export namespace proxy {
-
+	
 	export class DnsDiagnosticSummary {
 	    hasConfig: boolean;
 	    sourceFormat: string;
@@ -2045,11 +2286,11 @@ export namespace proxy {
 	    fallbackCount: number;
 	    xrayServerCount: number;
 	    unsupported: string[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new DnsDiagnosticSummary(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.hasConfig = source["hasConfig"];
@@ -2071,11 +2312,11 @@ export namespace proxy {
 	    bridgeAlive: boolean;
 	    bridgePort: number;
 	    lastError: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ProxyRuntimeDiagnostic(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.workDir = source["workDir"];
@@ -2106,11 +2347,11 @@ export namespace proxy {
 	    outbound: Record<string, any>;
 	    runtime: ProxyRuntimeDiagnostic;
 	    errors: string[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ProxyBuildDiagnostic(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.proxyId = source["proxyId"];
@@ -2130,7 +2371,7 @@ export namespace proxy {
 	        this.runtime = this.convertValues(source["runtime"], ProxyRuntimeDiagnostic);
 	        this.errors = source["errors"];
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -2151,3 +2392,4 @@ export namespace proxy {
 	}
 
 }
+

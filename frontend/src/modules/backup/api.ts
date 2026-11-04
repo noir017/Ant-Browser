@@ -13,6 +13,7 @@ export interface BackupActionResult {
   skippedEntries?: number
   fileCount?: number
   partial?: boolean
+  rolledBack?: boolean
   componentTotal?: number
   componentSuccess?: number
   componentFailed?: number
@@ -26,6 +27,8 @@ export interface BackupActionResult {
   remoteNames?: string[]
   remoteError?: string
   remoteWarning?: string
+  portableSessionProfileCount?: number
+  portableSessionWarning?: string
   profileCount?: number
   profileNames?: string[]
   importedCount?: number
@@ -82,6 +85,7 @@ const getBindings = async () => {
 export async function createBackupPackage(
   destinations: BackupDestinationSelection,
   profileIds: string[] = [],
+  portableSessionPassword = '',
 ): Promise<BackupActionResult> {
   const bindings: any = await getBindings()
   if (!bindings?.BackupCreatePackage) {
@@ -95,6 +99,9 @@ export async function createBackupPackage(
   }
   if (profileIds.length > 0) {
     payload.profileIds = JSON.stringify(profileIds)
+  }
+  if (portableSessionPassword) {
+    payload.portableSessionPassword = portableSessionPassword
   }
   return (await bindings.BackupCreatePackage(payload)) || {}
 }

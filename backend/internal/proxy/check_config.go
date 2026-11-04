@@ -12,6 +12,46 @@ const defaultIPHealthTargetTimeoutMs = 10000
 
 func NormalizeCheckSettings(settings config.ProxyCheckConfig) config.ProxyCheckConfig {
 	settings.BridgeStartTimeoutMs = normalizePositiveInt(settings.BridgeStartTimeoutMs, defaultBridgeStartTimeoutMs)
+	settings.SpeedIntervalMinutes = normalizePositiveInt(settings.SpeedIntervalMinutes, config.DefaultProxySpeedIntervalMinutes)
+	if settings.SpeedIntervalMinutes > config.MaxProxySpeedIntervalMinutes {
+		settings.SpeedIntervalMinutes = config.MaxProxySpeedIntervalMinutes
+	}
+	settings.FailureRetryMinutes = normalizePositiveInt(settings.FailureRetryMinutes, config.DefaultProxyFailureRetryMinutes)
+	if settings.FailureRetryMinutes > 24*60 {
+		settings.FailureRetryMinutes = 24 * 60
+	}
+	settings.SpeedConcurrency = normalizePositiveInt(settings.SpeedConcurrency, config.DefaultProxySpeedConcurrency)
+	if settings.SpeedConcurrency > config.MaxProxySpeedConcurrency {
+		settings.SpeedConcurrency = config.MaxProxySpeedConcurrency
+	}
+	// 虚拟分组核验间隔：必须有界，否则"至少每 3 小时核验一次"无法保证。
+	settings.VirtualGroupProbeIntervalMinutes = normalizePositiveInt(
+		settings.VirtualGroupProbeIntervalMinutes,
+		config.DefaultVirtualGroupProbeIntervalMinutes,
+	)
+	if settings.VirtualGroupProbeIntervalMinutes > config.MaxVirtualGroupProbeIntervalMinutes {
+		settings.VirtualGroupProbeIntervalMinutes = config.MaxVirtualGroupProbeIntervalMinutes
+	}
+	settings.DegradeFailureThreshold = clampInt(
+		normalizePositiveInt(settings.DegradeFailureThreshold, config.DefaultDegradeFailureThreshold),
+		1,
+		config.MaxVirtualGroupHealthThreshold,
+	)
+	settings.RestoreSuccessThreshold = clampInt(
+		normalizePositiveInt(settings.RestoreSuccessThreshold, config.DefaultRestoreSuccessThreshold),
+		1,
+		config.MaxVirtualGroupHealthThreshold,
+	)
+	settings.RuntimeFailoverCooldownMinutes = clampInt(
+		normalizePositiveInt(settings.RuntimeFailoverCooldownMinutes, config.DefaultRuntimeFailoverCooldownMinutes),
+		1,
+		config.MaxRuntimeFailoverCooldownMinutes,
+	)
+	settings.RuntimeFailoverMaxAttempts = clampInt(
+		normalizePositiveInt(settings.RuntimeFailoverMaxAttempts, config.DefaultRuntimeFailoverMaxAttempts),
+		1,
+		config.MaxRuntimeFailoverAttempts,
+	)
 	settings.SpeedTargetID = strings.TrimSpace(settings.SpeedTargetID)
 	settings.IPHealthTargetID = strings.TrimSpace(settings.IPHealthTargetID)
 	settings.Targets = NormalizeCheckTargets(settings.Targets)
@@ -29,10 +69,14 @@ func NormalizeCheckSettings(settings config.ProxyCheckConfig) config.ProxyCheckC
 
 func BuildSpeedTestConfig(settings config.ProxyCheckConfig) *SpeedTestConfig {
 	cfg := DefaultSpeedTestConfig
+	cfg.TargetID = strings.TrimSpace(settings.SpeedTargetID)
 	if settings.BridgeStartTimeoutMs > 0 {
 		cfg.TCPTimeout = time.Duration(settings.BridgeStartTimeoutMs) * time.Millisecond
 	}
 	target := FindCheckTarget(settings.Targets, settings.SpeedTargetID, "speed")
+	if strings.TrimSpace(target.ID) != "" {
+		cfg.TargetID = strings.TrimSpace(target.ID)
+	}
 	if strings.TrimSpace(target.URL) != "" {
 		cfg.URLs = []string{strings.TrimSpace(target.URL)}
 	}
@@ -128,4 +172,14 @@ func normalizePositiveInt(value int, fallback int) int {
 		return value
 	}
 	return fallback
+}
+
+func clampInt(value int, min int, max int) int {
+	if value < min {
+		return min
+	}
+	if value > max {
+		return max
+	}
+	return value
 }

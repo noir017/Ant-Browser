@@ -1,8 +1,10 @@
 package backend
 
 import (
+	"ant-chrome/backend/internal/browser"
 	"ant-chrome/backend/internal/config"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -60,6 +62,96 @@ func (a *App) backupMergeProxiesFile(payloadRoot string, stats *backupMergeStats
 	return config.SaveProxies(dstPath, merged)
 }
 
+func (a *App) backupReconcileProxyReferencesWithDatabase(sourceProxies []browser.Proxy) error {
+	if a == nil || a.browserMgr == nil || a.browserMgr.ProxyDAO == nil {
+		return nil
+	}
+	targetProxies, err := a.browserMgr.ProxyDAO.List()
+	if err != nil {
+		return fmt.Errorf("读取代理数据库失败: %w", err)
+	}
+	if len(sourceProxies) == 0 {
+		return nil
+	}
+
+	targetByID := make(map[string]backupImportProxyRecord, len(targetProxies))
+	targetByConfig := make(map[string]string, len(targetProxies))
+	usedTargetIDs := make(map[string]struct{}, len(targetProxies))
+	for _, item := range targetProxies {
+		proxyID := strings.TrimSpace(item.ProxyId)
+		if proxyID == "" {
+			continue
+		}
+		idKey := backupImportIDKey(proxyID)
+		targetByID[idKey] = backupImportProxyRecord{ID: proxyID, Config: strings.TrimSpace(item.ProxyConfig)}
+		usedTargetIDs[idKey] = struct{}{}
+		if configKey := backupImportTextKey(item.ProxyConfig); configKey != "" {
+			targetByConfig[configKey] = proxyID
+		}
+	}
+
+	mappings := newBackupImportReferenceMappings()
+	importedIDs := make([]string, 0)
+	needsConfigSave := false
+	seenSourceIDs := make(map[string]struct{}, len(sourceProxies))
+	for _, sourceProxy := range sourceProxies {
+		sourceID := strings.TrimSpace(sourceProxy.ProxyId)
+		sourceConfig := strings.TrimSpace(sourceProxy.ProxyConfig)
+		if sourceID == "" || sourceConfig == "" {
+			continue
+		}
+		sourceKey := backupImportIDKey(sourceID)
+		if _, exists := seenSourceIDs[sourceKey]; exists {
+			continue
+		}
+		seenSourceIDs[sourceKey] = struct{}{}
+
+		targetID := ""
+		if existing, exists := targetByID[sourceKey]; exists && strings.EqualFold(existing.Config, sourceConfig) {
+			targetID = existing.ID
+		}
+		if targetID == "" {
+			if existingID, exists := targetByConfig[backupImportTextKey(sourceConfig)]; exists {
+				targetID = existingID
+			}
+		}
+		if targetID == "" {
+			targetID = sourceID
+			if _, exists := usedTargetIDs[backupImportIDKey(targetID)]; exists {
+				targetID = backupImportGeneratedID(usedTargetIDs)
+			} else {
+				usedTargetIDs[backupImportIDKey(targetID)] = struct{}{}
+			}
+			sourceProxy.ProxyId = targetID
+			if err := a.browserMgr.ProxyDAO.Upsert(sourceProxy); err != nil {
+				for _, importedID := range importedIDs {
+					_ = a.browserMgr.ProxyDAO.Delete(importedID)
+				}
+				return fmt.Errorf("补充代理到数据库失败(%s): %w", sourceProxy.ProxyName, err)
+			}
+			targetByID[backupImportIDKey(targetID)] = backupImportProxyRecord{ID: targetID, Config: sourceConfig}
+			targetByConfig[backupImportTextKey(sourceConfig)] = targetID
+			importedIDs = append(importedIDs, targetID)
+		}
+
+		backupImportSetMapping(mappings.Proxies, sourceID, targetID, false)
+		if !strings.EqualFold(sourceID, targetID) {
+			needsConfigSave = true
+		}
+	}
+
+	if a.config != nil && needsConfigSave {
+		backupApplyImportReferenceMappings(a.config, mappings)
+		if err := a.config.Save(a.resolveAppPath("config.yaml")); err != nil {
+			for _, importedID := range importedIDs {
+				_ = a.browserMgr.ProxyDAO.Delete(importedID)
+			}
+			return fmt.Errorf("保存代理引用映射失败: %w", err)
+		}
+	}
+	return nil
+}
+
 func backupFindDatabaseFile(payloadRoot string) string {
 	candidates := []string{
 		filepath.Join(payloadRoot, "app", "database", "app.db"),
@@ -97,6 +189,9 @@ func (a *App) backupMergeDatabaseFromSource(srcDBPath string, incomingCfg *confi
 		return nil, fmt.Errorf("挂载备份数据库失败: %w", err)
 	}
 	sourceAttached = true
+	if err := backupMergeBookmarkState(tx, stats, a.config, incomingCfg); err != nil {
+		return nil, err
+	}
 
 	mappings, err := a.backupBuildImportReferenceMappings(tx, incomingCfg, stats)
 	if err != nil {
@@ -126,16 +221,10 @@ FROM src.browser_groups s
 			name: "browser_proxies",
 		},
 		{
-			name: "browser_profiles",
+			name: "browser_proxy_virtual_groups",
 		},
 		{
-			name: "browser_bookmarks",
-			insertSafe: `INSERT INTO browser_bookmarks (name, url, sort_order)
-SELECT s.name, s.url, s.sort_order
-FROM src.browser_bookmarks s
-WHERE NOT EXISTS (
-  SELECT 1 FROM browser_bookmarks t WHERE lower(t.url) = lower(s.url)
-)`,
+			name: "browser_profiles",
 		},
 		{
 			name: "browser_extensions",
@@ -219,19 +308,14 @@ WHERE EXISTS (SELECT 1 FROM temp.backup_import_profile_map m WHERE m.source_id =
 		}
 
 		sqlText := item.insertSafe
-		if item.name == "browser_bookmarks" {
-			hasOpenOnStart, err := backupSrcColumnExists(tx, item.name, "open_on_start")
+		if item.name == "browser_proxy_virtual_groups" {
+			imported, skipped, err := backupMergeDatabaseProxyVirtualGroups(tx, mappings, stats)
 			if err != nil {
 				return nil, err
 			}
-			if hasOpenOnStart {
-				sqlText = `INSERT INTO browser_bookmarks (name, url, open_on_start, sort_order)
-SELECT s.name, s.url, COALESCE(s.open_on_start,0), s.sort_order
-FROM src.browser_bookmarks s
-WHERE NOT EXISTS (
-  SELECT 1 FROM browser_bookmarks t WHERE lower(t.url) = lower(s.url)
-)`
-			}
+			stats.Imported += imported
+			stats.Skipped += skipped
+			continue
 		}
 		if item.name == "browser_profiles" {
 			hasRestoreLastSession, err := backupSrcColumnExists(tx, item.name, "restore_last_session")
@@ -351,6 +435,178 @@ WHERE NOT EXISTS (
 	return mappings, nil
 }
 
+type backupBookmarkRecord struct {
+	name        string
+	url         string
+	openOnStart int
+	sortOrder   int
+}
+
+func backupMergeBookmarkState(tx *sql.Tx, stats *backupMergeStats, current, incoming *config.Config) error {
+	targetActiveURLs, err := backupReadBookmarkURLKeys(tx, "browser_bookmarks")
+	if err != nil {
+		return fmt.Errorf("读取当前书签失败: %w", err)
+	}
+	targetDeletedURLs, err := backupReadBookmarkURLs(tx, "browser_bookmark_deletions")
+	if err != nil {
+		return fmt.Errorf("读取当前书签删除标记失败: %w", err)
+	}
+
+	sourceDeletedURLs := make([]string, 0)
+	sourceDeletionExists, err := backupSrcTableExists(tx, "browser_bookmark_deletions")
+	if err != nil {
+		return err
+	}
+	if sourceDeletionExists {
+		sourceDeletedURLs, err = backupReadBookmarkURLs(tx, "src.browser_bookmark_deletions")
+		if err != nil {
+			return fmt.Errorf("读取备份书签删除标记失败: %w", err)
+		}
+	}
+
+	if current != nil {
+		for bookmarkURL := range activeBookmarkURLSet(current.Browser.DefaultBookmarks) {
+			targetActiveURLs[bookmarkURL] = struct{}{}
+		}
+	}
+	configDeletedURLs := make([]string, 0)
+	for _, cfg := range []*config.Config{current, incoming} {
+		if cfg != nil {
+			configDeletedURLs = append(configDeletedURLs, cfg.Browser.DeletedBookmarkURLs...)
+		}
+	}
+	deletedURLs := mergeBookmarkDeletionURLs(configDeletedURLs, targetDeletedURLs, sourceDeletedURLs)
+	deletedURLs = filterBookmarkDeletionsByActiveURLs(deletedURLs, targetActiveURLs)
+	deletedURLSet := make(map[string]struct{}, len(deletedURLs))
+	for _, bookmarkURL := range deletedURLs {
+		deletedURLSet[bookmarkURL] = struct{}{}
+	}
+
+	if _, err := tx.Exec(`DELETE FROM browser_bookmark_deletions`); err != nil {
+		return fmt.Errorf("清理旧书签删除标记失败: %w", err)
+	}
+	for _, bookmarkURL := range deletedURLs {
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO browser_bookmark_deletions (url) VALUES (?)`, bookmarkURL); err != nil {
+			return fmt.Errorf("写入书签删除标记失败: %w", err)
+		}
+	}
+
+	sourceBookmarks, sourceBookmarksExists, err := backupReadSourceBookmarks(tx)
+	if err != nil {
+		return err
+	}
+	if !sourceBookmarksExists {
+		return nil
+	}
+	for _, bookmark := range sourceBookmarks {
+		bookmarkURL := bookmarkURLKey(bookmark.url)
+		if bookmarkURL == "" {
+			backupRecordBookmarkSkipped(stats)
+			continue
+		}
+		if _, exists := targetActiveURLs[bookmarkURL]; exists {
+			backupRecordBookmarkSkipped(stats)
+			continue
+		}
+		if _, deleted := deletedURLSet[bookmarkURL]; deleted {
+			backupRecordBookmarkSkipped(stats)
+			continue
+		}
+		if _, err := tx.Exec(
+			`INSERT INTO browser_bookmarks (name, url, open_on_start, sort_order) VALUES (?, ?, ?, ?)`,
+			bookmark.name, bookmark.url, bookmark.openOnStart, bookmark.sortOrder,
+		); err != nil {
+			return fmt.Errorf("导入书签失败: %w", err)
+		}
+		targetActiveURLs[bookmarkURL] = struct{}{}
+		backupRecordBookmarkImported(stats)
+	}
+	return nil
+}
+
+func backupReadBookmarkURLKeys(tx *sql.Tx, relation string) (map[string]struct{}, error) {
+	urls, err := backupReadBookmarkURLs(tx, relation)
+	if err != nil {
+		return nil, err
+	}
+	keys := make(map[string]struct{}, len(urls))
+	for _, rawURL := range urls {
+		if bookmarkURL := bookmarkURLKey(rawURL); bookmarkURL != "" {
+			keys[bookmarkURL] = struct{}{}
+		}
+	}
+	return keys, nil
+}
+
+func backupReadBookmarkURLs(tx *sql.Tx, relation string) ([]string, error) {
+	rows, err := tx.Query("SELECT url FROM " + relation)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	urls := make([]string, 0)
+	for rows.Next() {
+		var rawURL string
+		if err := rows.Scan(&rawURL); err != nil {
+			return nil, err
+		}
+		urls = append(urls, rawURL)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return urls, nil
+}
+
+func backupReadSourceBookmarks(tx *sql.Tx) ([]backupBookmarkRecord, bool, error) {
+	exists, err := backupSrcTableExists(tx, "browser_bookmarks")
+	if err != nil {
+		return nil, false, err
+	}
+	if !exists {
+		return nil, false, nil
+	}
+	hasOpenOnStart, err := backupSrcColumnExists(tx, "browser_bookmarks", "open_on_start")
+	if err != nil {
+		return nil, false, err
+	}
+	query := `SELECT name, url, 0, sort_order FROM src.browser_bookmarks ORDER BY sort_order, rowid`
+	if hasOpenOnStart {
+		query = `SELECT name, url, COALESCE(open_on_start, 0), sort_order FROM src.browser_bookmarks ORDER BY sort_order, rowid`
+	}
+	rows, err := tx.Query(query)
+	if err != nil {
+		return nil, false, fmt.Errorf("读取备份书签失败: %w", err)
+	}
+	defer rows.Close()
+
+	bookmarks := make([]backupBookmarkRecord, 0)
+	for rows.Next() {
+		var bookmark backupBookmarkRecord
+		if err := rows.Scan(&bookmark.name, &bookmark.url, &bookmark.openOnStart, &bookmark.sortOrder); err != nil {
+			return nil, false, err
+		}
+		bookmarks = append(bookmarks, bookmark)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	return bookmarks, true, nil
+}
+
+func backupRecordBookmarkImported(stats *backupMergeStats) {
+	if stats != nil {
+		stats.Imported++
+	}
+}
+
+func backupRecordBookmarkSkipped(stats *backupMergeStats) {
+	if stats != nil {
+		stats.Skipped++
+	}
+}
+
 type backupSourceColumnSpec struct {
 	name     string
 	fallback string
@@ -373,6 +629,10 @@ func backupBuildProxyMergeSQL(tx *sql.Tx) (string, error) {
 			{name: "source_auto_refresh", fallback: "0"},
 			{name: "source_refresh_interval_m", fallback: "0"},
 			{name: "source_last_refresh_at", fallback: "''"},
+			{name: "source_fetch_proxy_id", fallback: "''"},
+			{name: "source_last_refresh_error", fallback: "''"},
+			{name: "source_missing", fallback: "0"},
+			{name: "source_missing_since", fallback: "''"},
 			{name: "last_latency_ms", fallback: "-1"},
 			{name: "last_test_ok", fallback: "0"},
 			{name: "last_tested_at", fallback: "''"},
@@ -399,6 +659,8 @@ func backupBuildProfileMergeSQL(tx *sql.Tx) (string, error) {
 			{name: "fingerprint_args", fallback: "'[]'"},
 			{name: "proxy_id", fallback: "''"},
 			{name: "proxy_config", fallback: "''"},
+			{name: "proxy_mode", fallback: "''"},
+			{name: "proxy_group_name", fallback: "''"},
 			{name: "proxy_bind_source_id", fallback: "''"},
 			{name: "proxy_bind_source_url", fallback: "''"},
 			{name: "proxy_bind_name", fallback: "''"},
@@ -472,6 +734,259 @@ func backupListTargetIDs(tx *sql.Tx, table, column string) (map[string]struct{},
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("读取现有数据标识失败(%s): %w", table, err)
+	}
+	return result, nil
+}
+
+type backupProxyVirtualGroupSourceRow struct {
+	groupID              string
+	groupName            string
+	strategy             string
+	selectedProxyID      string
+	preferredProxyID     string
+	memberProxyIDsJSON   string
+	memberGroupNamesJSON string
+	sortOrder            int
+	createdAt            string
+	updatedAt            string
+}
+
+func backupMergeDatabaseProxyVirtualGroups(tx *sql.Tx, mappings *backupImportReferenceMappings, stats *backupMergeStats) (int, int, error) {
+	if mappings == nil {
+		return 0, 0, fmt.Errorf("导入虚拟代理分组缺少代理节点映射")
+	}
+
+	groupIDExpression, err := backupSourceColumnExpression(tx, "browser_proxy_virtual_groups", "s", "group_id", "''")
+	if err != nil {
+		return 0, 0, err
+	}
+	groupNameExpression, err := backupSourceColumnExpression(tx, "browser_proxy_virtual_groups", "s", "group_name", "''")
+	if err != nil {
+		return 0, 0, err
+	}
+	strategyExpression, err := backupSourceColumnExpression(tx, "browser_proxy_virtual_groups", "s", "strategy", "'round_robin'")
+	if err != nil {
+		return 0, 0, err
+	}
+	selectedProxyIDExpression, err := backupSourceColumnExpression(tx, "browser_proxy_virtual_groups", "s", "selected_proxy_id", "''")
+	if err != nil {
+		return 0, 0, err
+	}
+	// 旧备份没有 preferred_proxy_id 列，回落空串，导入后由首次选中补写。
+	preferredProxyIDExpression, err := backupSourceColumnExpression(tx, "browser_proxy_virtual_groups", "s", "preferred_proxy_id", "''")
+	if err != nil {
+		return 0, 0, err
+	}
+	memberProxyIDsExpression, err := backupSourceColumnExpression(tx, "browser_proxy_virtual_groups", "s", "member_proxy_ids", "'[]'")
+	if err != nil {
+		return 0, 0, err
+	}
+	memberGroupNamesExpression, err := backupSourceColumnExpression(tx, "browser_proxy_virtual_groups", "s", "member_group_names", "'[]'")
+	if err != nil {
+		return 0, 0, err
+	}
+	sortOrderExpression, err := backupSourceColumnExpression(tx, "browser_proxy_virtual_groups", "s", "sort_order", "0")
+	if err != nil {
+		return 0, 0, err
+	}
+	createdAtExpression, err := backupSourceColumnExpression(tx, "browser_proxy_virtual_groups", "s", "created_at", "''")
+	if err != nil {
+		return 0, 0, err
+	}
+	updatedAtExpression, err := backupSourceColumnExpression(tx, "browser_proxy_virtual_groups", "s", "updated_at", "''")
+	if err != nil {
+		return 0, 0, err
+	}
+	rows, err := tx.Query(fmt.Sprintf(`
+		SELECT %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+		FROM src.browser_proxy_virtual_groups s
+		ORDER BY %s ASC, %s COLLATE NOCASE ASC`,
+		groupIDExpression, groupNameExpression, strategyExpression, selectedProxyIDExpression, preferredProxyIDExpression,
+		memberProxyIDsExpression, memberGroupNamesExpression, sortOrderExpression, createdAtExpression, updatedAtExpression,
+		sortOrderExpression, groupNameExpression))
+	if err != nil {
+		return 0, 0, fmt.Errorf("读取备份虚拟代理分组失败: %w", err)
+	}
+	sourceRows := make([]backupProxyVirtualGroupSourceRow, 0)
+	for rows.Next() {
+		var item backupProxyVirtualGroupSourceRow
+		if err := rows.Scan(&item.groupID, &item.groupName, &item.strategy, &item.selectedProxyID, &item.preferredProxyID, &item.memberProxyIDsJSON, &item.memberGroupNamesJSON, &item.sortOrder, &item.createdAt, &item.updatedAt); err != nil {
+			rows.Close()
+			return 0, 0, err
+		}
+		sourceRows = append(sourceRows, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, 0, err
+	}
+
+	sourceProxies, err := backupQuerySourceProxyVirtualGroupMembers(tx)
+	if err != nil {
+		return 0, 0, err
+	}
+	usedGroupIDs, err := backupListTargetIDs(tx, "browser_proxy_virtual_groups", "group_id")
+	if err != nil {
+		return 0, 0, err
+	}
+	usedGroupNames := make(map[string]struct{})
+	rows, err = tx.Query(`SELECT COALESCE(group_name,'') FROM browser_proxy_virtual_groups`)
+	if err != nil {
+		return 0, 0, fmt.Errorf("读取现有虚拟代理分组名称失败: %w", err)
+	}
+	for rows.Next() {
+		var groupName string
+		if err := rows.Scan(&groupName); err != nil {
+			rows.Close()
+			return 0, 0, err
+		}
+		if key := backupImportTextKey(groupName); key != "" {
+			usedGroupNames[key] = struct{}{}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, 0, err
+	}
+
+	imported := 0
+	for _, sourceRow := range sourceRows {
+		group := browser.ProxyVirtualGroup{
+			GroupId:          sourceRow.groupID,
+			GroupName:        sourceRow.groupName,
+			Strategy:         sourceRow.strategy,
+			SelectedProxyId:  sourceRow.selectedProxyID,
+			PreferredProxyId: sourceRow.preferredProxyID,
+			SortOrder:        sourceRow.sortOrder,
+			CreatedAt:        sourceRow.createdAt,
+			UpdatedAt:        sourceRow.updatedAt,
+		}
+		if strings.TrimSpace(sourceRow.memberProxyIDsJSON) != "" {
+			if err := json.Unmarshal([]byte(sourceRow.memberProxyIDsJSON), &group.MemberProxyIds); err != nil {
+				return 0, 0, fmt.Errorf("解析备份虚拟代理分组代理节点失败(%s): %w", group.GroupName, err)
+			}
+		}
+		if strings.TrimSpace(sourceRow.memberGroupNamesJSON) != "" {
+			if err := json.Unmarshal([]byte(sourceRow.memberGroupNamesJSON), &group.MemberGroupNames); err != nil {
+				return 0, 0, fmt.Errorf("解析备份虚拟代理分组成员失败(%s): %w", group.GroupName, err)
+			}
+		}
+		group = browser.MaterializeProxyVirtualGroup(group, sourceProxies)
+		if group.GroupName == "" {
+			continue
+		}
+		if mappedName := backupImportMappedID(mappings.ProxyVirtualGroups, group.GroupName); mappedName != "" {
+			group.GroupName = mappedName
+		}
+		nameKey := backupImportTextKey(group.GroupName)
+		if _, exists := usedGroupNames[nameKey]; exists {
+			return 0, 0, fmt.Errorf("虚拟代理分组名称映射冲突(%s)，已停止导入以避免覆盖", group.GroupName)
+		}
+
+		mappedProxyIDs := make([]string, 0, len(group.MemberProxyIds))
+		seenProxyIDs := make(map[string]struct{}, len(group.MemberProxyIds))
+		for _, sourceProxyID := range group.MemberProxyIds {
+			targetProxyID := backupImportMappedID(mappings.Proxies, sourceProxyID)
+			key := backupImportIDKey(targetProxyID)
+			if key == "" {
+				backupRecordImportConflict(stats)
+				continue
+			}
+			if _, exists := seenProxyIDs[key]; exists {
+				continue
+			}
+			seenProxyIDs[key] = struct{}{}
+			mappedProxyIDs = append(mappedProxyIDs, targetProxyID)
+		}
+		group.MemberProxyIds = mappedProxyIDs
+		if selectedProxyID := strings.TrimSpace(group.SelectedProxyId); selectedProxyID != "" {
+			if mappedSelectedProxyID := backupImportMappedID(mappings.Proxies, selectedProxyID); mappedSelectedProxyID != "" {
+				group.SelectedProxyId = mappedSelectedProxyID
+			} else {
+				backupRecordImportConflict(stats)
+				group.SelectedProxyId = ""
+			}
+		}
+		if preferredProxyID := strings.TrimSpace(group.PreferredProxyId); preferredProxyID != "" {
+			if mappedPreferredProxyID := backupImportMappedID(mappings.Proxies, preferredProxyID); mappedPreferredProxyID != "" {
+				group.PreferredProxyId = mappedPreferredProxyID
+			} else {
+				backupRecordImportConflict(stats)
+				group.PreferredProxyId = ""
+			}
+		}
+
+		targetGroupID := strings.TrimSpace(group.GroupId)
+		if targetGroupID == "" {
+			targetGroupID = backupImportGeneratedID(usedGroupIDs)
+		} else if _, exists := usedGroupIDs[backupImportIDKey(targetGroupID)]; exists {
+			targetGroupID = backupImportGeneratedID(usedGroupIDs)
+		} else {
+			usedGroupIDs[backupImportIDKey(targetGroupID)] = struct{}{}
+		}
+		memberProxyIDsJSON, err := json.Marshal(group.MemberProxyIds)
+		if err != nil {
+			return 0, 0, fmt.Errorf("序列化虚拟代理分组代理节点失败(%s): %w", group.GroupName, err)
+		}
+		memberGroupNamesJSON, err := json.Marshal(group.MemberGroupNames)
+		if err != nil {
+			return 0, 0, fmt.Errorf("序列化虚拟代理分组成员失败(%s): %w", group.GroupName, err)
+		}
+		if _, err := tx.Exec(`
+			INSERT INTO browser_proxy_virtual_groups (
+				group_id, group_name, strategy, selected_proxy_id, preferred_proxy_id, member_proxy_ids, member_group_names, sort_order, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			targetGroupID, group.GroupName, group.Strategy, group.SelectedProxyId, group.PreferredProxyId, string(memberProxyIDsJSON), string(memberGroupNamesJSON), group.SortOrder, group.CreatedAt, group.UpdatedAt,
+		); err != nil {
+			return 0, 0, fmt.Errorf("导入虚拟代理分组失败(%s): %w", group.GroupName, err)
+		}
+		usedGroupNames[nameKey] = struct{}{}
+		imported++
+	}
+
+	return imported, len(sourceRows) - imported, nil
+}
+
+func backupQuerySourceProxyVirtualGroupMembers(tx *sql.Tx) ([]browser.Proxy, error) {
+	exists, err := backupSrcTableExists(tx, "browser_proxies")
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return []browser.Proxy{}, nil
+	}
+	hasGroupName, err := backupSrcColumnExists(tx, "browser_proxies", "group_name")
+	if err != nil {
+		return nil, err
+	}
+	groupNameExpression := `''`
+	if hasGroupName {
+		groupNameExpression = `COALESCE(s.group_name,'')`
+	}
+	rows, err := tx.Query(fmt.Sprintf(`
+		SELECT COALESCE(s.proxy_id,''), %s
+		FROM src.browser_proxies s
+		ORDER BY s.rowid`, groupNameExpression))
+	if err != nil {
+		return nil, fmt.Errorf("读取备份代理节点分组失败: %w", err)
+	}
+	defer rows.Close()
+	result := make([]browser.Proxy, 0)
+	for rows.Next() {
+		var item browser.Proxy
+		if err := rows.Scan(&item.ProxyId, &item.GroupName); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return result, nil
 }

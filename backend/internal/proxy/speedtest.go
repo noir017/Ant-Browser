@@ -26,6 +26,7 @@ const DefaultSpeedTestURL = "http://www.gstatic.com/generate_204"
 
 // SpeedTestConfig 测速参数
 type SpeedTestConfig struct {
+	TargetID       string
 	Timeout        time.Duration
 	TCPTimeout     time.Duration
 	URLs           []string
@@ -47,7 +48,7 @@ func SpeedTest(
 	singboxMgr *SingBoxManager,
 	cfg *SpeedTestConfig,
 ) TestResult {
-	return SpeedTestWithConnector(proxyId, proxies, xrayMgr, singboxMgr, nil, config.BrowserConnectorXray, cfg)
+	return SpeedTestWithConnector(proxyId, proxies, xrayMgr, singboxMgr, nil, nil, config.BrowserConnectorXray, cfg)
 }
 
 // SpeedTestWithConnector 保留 connectorType 参数用于旧调用兼容。
@@ -58,11 +59,12 @@ func SpeedTestWithConnector(
 	xrayMgr *XrayManager,
 	singboxMgr *SingBoxManager,
 	clashMgr *ClashManager,
+	mieruMgr *MieruManager,
 	connectorType string,
 	cfg *SpeedTestConfig,
 ) TestResult {
 	connectorType = config.NormalizeBrowserConnectorType(connectorType)
-	return lightHTTPDelayTestWithConnector(proxyId, proxies, xrayMgr, singboxMgr, clashMgr, connectorType, cfg)
+	return lightHTTPDelayTestWithConnector(proxyId, proxies, xrayMgr, singboxMgr, clashMgr, mieruMgr, connectorType, cfg)
 }
 
 func lightHTTPDelayTestWithConnector(
@@ -71,6 +73,7 @@ func lightHTTPDelayTestWithConnector(
 	xrayMgr *XrayManager,
 	singboxMgr *SingBoxManager,
 	clashMgr *ClashManager,
+	mieruMgr *MieruManager,
 	connectorType string,
 	cfg *SpeedTestConfig,
 ) TestResult {
@@ -103,7 +106,7 @@ func lightHTTPDelayTestWithConnector(
 		logger.F("targets", strings.Join(testURLs, ",")),
 	)
 
-	client, err := buildSpeedTestHTTPClient(src, proxyId, proxies, xrayMgr, singboxMgr, clashMgr, connectorType, cfg)
+	client, releaseClient, err := buildSpeedTestHTTPClient(src, proxyId, proxies, xrayMgr, singboxMgr, clashMgr, mieruMgr, connectorType, cfg)
 	if err != nil {
 		log.Warn("代理测速 HTTP 客户端创建失败",
 			logger.F("proxy_id", proxyId),
@@ -111,6 +114,7 @@ func lightHTTPDelayTestWithConnector(
 		)
 		return TestResult{ProxyId: proxyId, Ok: false, Engine: engine, Error: err.Error()}
 	}
+	defer releaseClient()
 
 	var lastErr error
 	var lastLatency int64
@@ -172,9 +176,10 @@ func buildSpeedTestHTTPClient(
 	xrayMgr *XrayManager,
 	singboxMgr *SingBoxManager,
 	clashMgr *ClashManager,
+	mieruMgr *MieruManager,
 	connectorType string,
 	cfg *SpeedTestConfig,
-) (*http.Client, error) {
+) (*http.Client, func(), error) {
 	timeout := DefaultSpeedTestConfig.Timeout
 	prepareTimeout := DefaultSpeedTestConfig.TCPTimeout
 	if cfg != nil {
@@ -190,25 +195,32 @@ func buildSpeedTestHTTPClient(
 	}
 
 	type clientResult struct {
-		client *http.Client
-		err    error
+		client  *http.Client
+		release func()
+		err     error
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), prepareTimeout)
 	defer cancel()
 	resultCh := make(chan clientResult, 1)
 	go func() {
-		client, err := buildProxyHTTPClientContext(ctx, src, proxyId, proxies, xrayMgr, singboxMgr, clashMgr, connectorType, timeout)
-		resultCh <- clientResult{client: client, err: err}
+		client, release, err := buildProbeHTTPClientContext(ctx, src, proxyId, proxies, xrayMgr, singboxMgr, clashMgr, mieruMgr, connectorType, timeout)
+		resultCh <- clientResult{client: client, release: release, err: err}
 	}()
 
 	select {
 	case result := <-resultCh:
 		if result.err != nil && errors.Is(result.err, context.DeadlineExceeded) {
-			return nil, fmt.Errorf("代理准备超时（%dms）", prepareTimeout.Milliseconds())
+			return nil, nil, fmt.Errorf("代理准备超时（%dms）", prepareTimeout.Milliseconds())
 		}
-		return result.client, result.err
+		return result.client, result.release, result.err
 	case <-ctx.Done():
-		return nil, fmt.Errorf("代理准备超时（%dms）", prepareTimeout.Milliseconds())
+		// 超时后桥接仍可能启动成功：必须有人释放它的引用，否则进程永远无法回收。
+		go func() {
+			if result := <-resultCh; result.release != nil {
+				result.release()
+			}
+		}()
+		return nil, nil, fmt.Errorf("代理准备超时（%dms）", prepareTimeout.Milliseconds())
 	}
 }
 
@@ -257,7 +269,7 @@ func speedTestRuntimeError(engine string, src string, proxies []config.BrowserPr
 			}
 		}
 	}
-	key := computeNodeKey(normalizeNodeScheme(src) + "\x00" + dnsServers)
+	key := ComputeBridgeKey(src, dnsServers, ProxyKernelXray)
 	return latestXrayErrorSummary(filepath.Join(xrayMgr.resolveWorkdir(key), "xray-error.log"))
 }
 
@@ -284,18 +296,43 @@ func latestXrayErrorSummary(path string) string {
 }
 
 func doSpeedTestRequest(client *http.Client, testURL string) (int64, int, error) {
-	latency, statusCode, err := doSpeedTestRequestWithMethod(client, http.MethodHead, testURL)
-	if err != nil || statusCode != http.StatusMethodNotAllowed {
-		if err != nil {
-			return latency, statusCode, err
-		}
-		secondLatency, secondStatusCode, secondErr := doSpeedTestRequestWithMethod(client, http.MethodHead, testURL)
-		if secondErr == nil {
-			return secondLatency, secondStatusCode, nil
-		}
-		return latency, statusCode, nil
+	latency, statusCode, err := doSpeedTestProbe(client, http.MethodHead, testURL)
+	if err != nil {
+		return latency, statusCode, err
 	}
-	return doSpeedTestRequestWithMethod(client, http.MethodGet, testURL)
+	if statusCode == http.StatusMethodNotAllowed || statusCode == http.StatusNotImplemented {
+		return doSpeedTestProbe(client, http.MethodGet, testURL)
+	}
+	// 第一次请求负责建立连接（TCP/代理握手，数值偏大），报告第二次（热连接）请求的纯往返延迟。
+	secondLatency, secondStatusCode, secondErr := doSpeedTestProbe(client, http.MethodHead, testURL)
+	if secondErr == nil {
+		return secondLatency, secondStatusCode, nil
+	}
+	return latency, statusCode, nil
+}
+
+// doSpeedTestProbe 带超时重试的探测请求：冷启动的桥接/内核可能恰好卡在超时边界，
+// 第一次请求负责建连，重试时连接通常已就绪，避免把"慢而非死"的节点误判为失败。
+func doSpeedTestProbe(client *http.Client, method string, testURL string) (int64, int, error) {
+	latency, statusCode, err := doSpeedTestRequestWithMethod(client, method, testURL)
+	if err == nil || !isSpeedTestTimeoutError(err) {
+		return latency, statusCode, err
+	}
+	return doSpeedTestRequestWithMethod(client, method, testURL)
+}
+
+// isSpeedTestTimeoutError 判断是否为超时类错误（客户端整体超时 / 上下文截止 / 底层 i/o 超时）。
+func isSpeedTestTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || os.IsTimeout(err) {
+		return true
+	}
+	message := err.Error()
+	return strings.Contains(message, "Client.Timeout") ||
+		strings.Contains(message, "context deadline exceeded") ||
+		strings.Contains(message, "i/o timeout")
 }
 
 func doSpeedTestRequestWithMethod(client *http.Client, method string, testURL string) (int64, int, error) {

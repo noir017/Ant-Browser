@@ -41,6 +41,48 @@ func TestNormalizeConfigDoesNotOverrideCustomDefaultFingerprintArgs(t *testing.T
 	assertStringSliceContains(t, config.Browser.DefaultFingerprintArgs, "--fingerprint-brand=Chrome")
 }
 
+func TestNormalizeConfigSetsAndBoundsProxySpeedSettings(t *testing.T) {
+	config := &Config{}
+	normalizeConfig(config)
+	if config.ProxyCheck.SpeedIntervalMinutes != DefaultProxySpeedIntervalMinutes {
+		t.Fatalf("default speed interval = %d, want %d", config.ProxyCheck.SpeedIntervalMinutes, DefaultProxySpeedIntervalMinutes)
+	}
+	if config.ProxyCheck.FailureRetryMinutes != DefaultProxyFailureRetryMinutes {
+		t.Fatalf("default failure retry = %d, want %d", config.ProxyCheck.FailureRetryMinutes, DefaultProxyFailureRetryMinutes)
+	}
+	if config.ProxyCheck.SpeedConcurrency != DefaultProxySpeedConcurrency {
+		t.Fatalf("default speed concurrency = %d, want %d", config.ProxyCheck.SpeedConcurrency, DefaultProxySpeedConcurrency)
+	}
+
+	config.ProxyCheck.FailureRetryMinutes = 24*60 + 1
+	config.ProxyCheck.SpeedIntervalMinutes = MaxProxySpeedIntervalMinutes + 1
+	config.ProxyCheck.SpeedConcurrency = MaxProxySpeedConcurrency + 1
+	normalizeConfig(config)
+	if config.ProxyCheck.SpeedIntervalMinutes != MaxProxySpeedIntervalMinutes || config.ProxyCheck.FailureRetryMinutes != 24*60 || config.ProxyCheck.SpeedConcurrency != MaxProxySpeedConcurrency {
+		t.Fatalf("bounded speed settings = interval %d, retry %d, concurrency %d", config.ProxyCheck.SpeedIntervalMinutes, config.ProxyCheck.FailureRetryMinutes, config.ProxyCheck.SpeedConcurrency)
+	}
+}
+
+// 虚拟分组核验间隔必须有硬上限，"至少每 3 小时核验一次"不能靠配置自觉。
+func TestNormalizeConfigBoundsVirtualGroupProbeInterval(t *testing.T) {
+	config := &Config{}
+	normalizeConfig(config)
+	if config.ProxyCheck.VirtualGroupProbeIntervalMinutes != DefaultVirtualGroupProbeIntervalMinutes {
+		t.Fatalf("default virtual group probe interval = %d, want %d",
+			config.ProxyCheck.VirtualGroupProbeIntervalMinutes, DefaultVirtualGroupProbeIntervalMinutes)
+	}
+	if MaxVirtualGroupProbeIntervalMinutes > 3*60 {
+		t.Fatalf("虚拟分组核验上限 = %d 分钟, 必须 <= 180", MaxVirtualGroupProbeIntervalMinutes)
+	}
+
+	config.ProxyCheck.VirtualGroupProbeIntervalMinutes = MaxProxySpeedIntervalMinutes
+	normalizeConfig(config)
+	if config.ProxyCheck.VirtualGroupProbeIntervalMinutes != MaxVirtualGroupProbeIntervalMinutes {
+		t.Fatalf("bounded virtual group probe interval = %d, want %d",
+			config.ProxyCheck.VirtualGroupProbeIntervalMinutes, MaxVirtualGroupProbeIntervalMinutes)
+	}
+}
+
 func assertStringSliceContains(t *testing.T, values []string, expected string) {
 	t.Helper()
 	for _, value := range values {

@@ -1,17 +1,23 @@
-import { AlertCircle, CheckCircle2, Download, ExternalLink, FolderOpen, History, Power, Puzzle, RefreshCw, RotateCw, Search, Settings, Trash2, Users } from 'lucide-react'
+import { AlertCircle, CheckCircle2, Download, ExternalLink, FolderOpen, History, MonitorSmartphone, Power, Puzzle, RefreshCw, RotateCw, Search, Settings, Trash2, Users } from 'lucide-react'
 import { Badge, Button, Card, Input } from '../../../shared/components'
 import type { BrowserExtension, BrowserExtensionLookupResult, BrowserProxy } from '../types'
-import { extensionStoreURL, formatExtensionSource, formatExtensionTime, getExtensionManifestMeta, getProxySpeedState } from './extensionManagementUtils'
+import { useProxySpeedFreshness } from '../proxySpeedFreshness'
+import { useProxySpeedStore } from '../proxySpeedStore'
+import { isProxySpeedResultFresh } from './proxyPool/storage'
+import { extensionStoreURL, formatExtensionSource, formatExtensionTime, getExtensionManifestMeta } from './extensionManagementUtils'
 
 export function ProxyStatePill({ useProxy, proxy }: { useProxy: boolean; proxy?: BrowserProxy }) {
+  const { now, speedResultMaxAgeMs } = useProxySpeedFreshness()
+  const speedResults = useProxySpeedStore((state) => state.results)
   if (!useProxy) {
     return <span className="rounded-full bg-[var(--color-bg-muted)] px-2 py-0.5 text-xs text-[var(--color-text-muted)]">直连下载</span>
   }
   if (!proxy) {
     return <span className="rounded-full bg-red-50 px-2 py-0.5 text-xs text-red-600">代理未选择</span>
   }
-  const state = getProxySpeedState(proxy)
-  const status = state?.ok ? `${state.latencyMs}ms` : state ? '不可用' : '未测试'
+  const result = speedResults[proxy.proxyId]
+  const fresh = result && isProxySpeedResultFresh(result.testedAt, now, speedResultMaxAgeMs)
+  const status = fresh ? (result.ok ? `${result.latencyMs}ms` : '不可用') : '未测试'
   return (
     <span className="rounded-full bg-green-50 px-2 py-0.5 text-xs text-green-700">
       使用代理：{proxy.proxyName || proxy.proxyId} · {status}
@@ -49,15 +55,16 @@ export function ExtensionManagementHeader({
     <Card padding="none" className="shadow-[var(--shadow-sm)]">
       <div className="flex flex-col gap-3 px-4 py-3 md:flex-row md:items-center md:justify-between">
         <h1 className="text-xl font-semibold text-[var(--color-text-primary)]">插件包管理</h1>
-        <div className="flex flex-wrap gap-2 md:justify-end">
-          <Button size="sm" variant="secondary" onClick={onOpenProxy}>
+        <div className="flex flex-wrap items-center gap-2 md:justify-end">
+          <Button size="sm" onClick={onOpenProxy}>
             <Settings className="h-4 w-4" />
             {proxyButtonText}
           </Button>
-          <Button size="sm" variant="secondary" onClick={onOpenHistory}>
-            <History className="h-4 w-4" />
-            历史
+          <Button size="sm" variant="secondary" onClick={onOpenDownloadDirectory} loading={downloadDirectoryLoading}>
+            <FolderOpen className="h-4 w-4" />
+            下载目录安装
           </Button>
+          <span className="h-5 w-px bg-[var(--color-border-muted)]" aria-hidden="true" />
           <Button size="sm" variant="secondary" onClick={onImportFile} loading={importing === 'file'}>
             <Download className="h-4 w-4" />
             导入包
@@ -66,9 +73,10 @@ export function ExtensionManagementHeader({
             <Download className="h-4 w-4" />
             导入目录
           </Button>
-          <Button size="sm" variant="secondary" onClick={onOpenDownloadDirectory} loading={downloadDirectoryLoading}>
-            <FolderOpen className="h-4 w-4" />
-            下载目录安装
+          <span className="h-5 w-px bg-[var(--color-border-muted)]" aria-hidden="true" />
+          <Button size="sm" variant="secondary" onClick={onOpenHistory}>
+            <History className="h-4 w-4" />
+            历史
           </Button>
           <Button size="sm" variant="secondary" onClick={onRefresh} loading={loading}>
             <RefreshCw className="h-4 w-4" />
@@ -127,15 +135,15 @@ export function ExtensionInstallCard({
           placeholder="Chrome Web Store 链接或 32 位插件 ID"
           className="flex-1"
         />
-        <Button type="button" variant="secondary" onClick={onLookup} loading={querying}>
+        <Button type="button" size="sm" onClick={onLookup} loading={querying}>
           <Search className="h-4 w-4" />
           查询
         </Button>
-        <Button type="button" variant="secondary" onClick={onOpenWebStoreQuery}>
+        <Button type="button" size="sm" variant="secondary" onClick={onOpenWebStoreQuery}>
           <ExternalLink className="h-4 w-4" />
           网页查询
         </Button>
-        <Button type="button" variant="secondary" onClick={onOpenManualInstall}>
+        <Button type="button" size="sm" variant="secondary" onClick={onOpenManualInstall}>
           <Download className="h-4 w-4" />
           手动安装
         </Button>
@@ -230,13 +238,14 @@ export interface InstalledExtensionsListProps {
   busyAction: 'toggle' | 'delete' | 'default' | ''
   updatingId: string
   onRestrictProfiles: (item: BrowserExtension) => void
+  onShowProfiles: (item: BrowserExtension) => void
   onDefaultInstallToggle: (item: BrowserExtension) => void
   onUpdate: (item: BrowserExtension) => void
   onToggle: (item: BrowserExtension) => void
   onDelete: (item: BrowserExtension) => void
 }
 
-export function InstalledExtensionsList({ items, busyId, busyAction, updatingId, onRestrictProfiles, onDefaultInstallToggle, onUpdate, onToggle, onDelete }: InstalledExtensionsListProps) {
+export function InstalledExtensionsList({ items, busyId, busyAction, updatingId, onRestrictProfiles, onShowProfiles, onDefaultInstallToggle, onUpdate, onToggle, onDelete }: InstalledExtensionsListProps) {
   return (
     <Card>
       <div className="mb-3 flex items-center justify-between">
@@ -251,6 +260,7 @@ export function InstalledExtensionsList({ items, busyId, busyAction, updatingId,
             busyAction={busyId === item.extensionId ? busyAction : ''}
             updating={updatingId === item.extensionId}
             onRestrictProfiles={onRestrictProfiles}
+            onShowProfiles={onShowProfiles}
             onDefaultInstallToggle={onDefaultInstallToggle}
             onUpdate={onUpdate}
             onToggle={onToggle}
@@ -274,13 +284,14 @@ export interface InstalledExtensionCardProps {
   busyAction: 'toggle' | 'delete' | 'default' | ''
   updating: boolean
   onRestrictProfiles: (item: BrowserExtension) => void
+  onShowProfiles: (item: BrowserExtension) => void
   onDefaultInstallToggle: (item: BrowserExtension) => void
   onUpdate: (item: BrowserExtension) => void
   onToggle: (item: BrowserExtension) => void
   onDelete: (item: BrowserExtension) => void
 }
 
-export function InstalledExtensionCard({ item, busy, busyAction, updating, onRestrictProfiles, onDefaultInstallToggle, onUpdate, onToggle, onDelete }: InstalledExtensionCardProps) {
+export function InstalledExtensionCard({ item, busy, busyAction, updating, onRestrictProfiles, onShowProfiles, onDefaultInstallToggle, onUpdate, onToggle, onDelete }: InstalledExtensionCardProps) {
   const meta = getExtensionManifestMeta(item)
   const storeUrl = extensionStoreURL(item)
   const actionButtonClass = 'min-w-[72px] will-change-transform hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.98]'
@@ -341,6 +352,10 @@ export function InstalledExtensionCard({ item, busy, busyAction, updating, onRes
           <Button type="button" size="sm" variant="secondary" onClick={() => onRestrictProfiles(item)} className="min-w-[96px] will-change-transform hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.98]">
             <Users className="h-4 w-4" />
             设置实例
+          </Button>
+          <Button type="button" size="sm" variant="secondary" onClick={() => onShowProfiles(item)} className="min-w-[96px] will-change-transform hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.98]">
+            <MonitorSmartphone className="h-4 w-4" />
+            打开实例
           </Button>
           <Button type="button" size="sm" variant="secondary" onClick={() => onUpdate(item)} disabled={updating} className={actionButtonClass}>
             <RotateCw className={`h-4 w-4 ${updating ? 'animate-spin' : ''}`} />

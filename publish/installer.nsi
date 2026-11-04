@@ -1,10 +1,10 @@
 ﻿; Ant Browser NSIS Installer Script
-; Usage: makensis /DVERSION=1.4.0 /DSTAGINGDIR=C:\path\to\staging installer.nsi
+; Usage: makensis /DVERSION=1.9.0 /DSTAGINGDIR=C:\path\to\staging installer.nsi
 
 Unicode True
 
 !ifndef VERSION
-  !define VERSION "1.4.0"
+  !define VERSION "1.9.0"
 !endif
 !ifndef STAGINGDIR
   !define STAGINGDIR "..\publish\staging"
@@ -27,6 +27,7 @@ Unicode True
   FileWrite ${HANDLE} "$$root = [System.IO.Path]::GetFullPath($$InstallDir).TrimEnd('\') + '\'$\r$\n"
   FileWrite ${HANDLE} "$$exclude = ''$\r$\n"
   FileWrite ${HANDLE} "if (-not [string]::IsNullOrWhiteSpace($$ExcludePath)) { $$exclude = [System.IO.Path]::GetFullPath($$ExcludePath) }$\r$\n"
+  FileWrite ${HANDLE} "$$coreNames = @('xray.exe', 'sing-box.exe', 'mihomo.exe', 'clash.exe')$\r$\n"
   FileWrite ${HANDLE} "function Get-AntBrowserProcesses {$\r$\n"
   FileWrite ${HANDLE} "  @(Get-CimInstance Win32_Process | Where-Object {$\r$\n"
   FileWrite ${HANDLE} "    $$_.ExecutablePath -and $$_.ExecutablePath.StartsWith($$root, [System.StringComparison]::OrdinalIgnoreCase) -and ($$exclude -eq '' -or -not $$_.ExecutablePath.Equals($$exclude, [System.StringComparison]::OrdinalIgnoreCase))$\r$\n"
@@ -34,10 +35,21 @@ Unicode True
   FileWrite ${HANDLE} "}$\r$\n"
   FileWrite ${HANDLE} "$$procs = @(Get-AntBrowserProcesses)$\r$\n"
   FileWrite ${HANDLE} "if (-not $$procs -or $$procs.Count -eq 0) { exit 0 }$\r$\n"
-  FileWrite ${HANDLE} "$$names = ($$procs | ForEach-Object { $$_.Name + '#' + $$_.ProcessId }) -join ', '$\r$\n"
+  FileWrite ${HANDLE} "$$coreProcs = @($$procs | Where-Object { $$coreNames -contains $$_.Name.ToLowerInvariant() })$\r$\n"
+  FileWrite ${HANDLE} "$$killed = @()$\r$\n"
+  FileWrite ${HANDLE} "foreach ($$proc in $$coreProcs) {$\r$\n"
+  FileWrite ${HANDLE} "  Stop-Process -Id $$proc.ProcessId -Force -ErrorAction SilentlyContinue$\r$\n"
+  FileWrite ${HANDLE} "  if ($$?) { $$killed += ($$proc.Name + '#' + $$proc.ProcessId) }$\r$\n"
+  FileWrite ${HANDLE} "}$\r$\n"
+  FileWrite ${HANDLE} "if ($$killed.Count -gt 0) {$\r$\n"
+  FileWrite ${HANDLE} "  Write-Host ('killed leftover cores: ' + ($$killed -join ', '))$\r$\n"
+  FileWrite ${HANDLE} "  Start-Sleep -Milliseconds 600$\r$\n"
+  FileWrite ${HANDLE} "}$\r$\n"
+  FileWrite ${HANDLE} "$$left = @(Get-AntBrowserProcesses)$\r$\n"
+  FileWrite ${HANDLE} "if (-not $$left -or $$left.Count -eq 0) { exit 0 }$\r$\n"
+  FileWrite ${HANDLE} "$$names = ($$left | ForEach-Object { $$_.Name + '#' + $$_.ProcessId }) -join ', '$\r$\n"
   FileWrite ${HANDLE} "Write-Host ('running: ' + $$names)$\r$\n"
   FileWrite ${HANDLE} "exit 1$\r$\n"
-  FileWrite ${HANDLE} "exit 0$\r$\n"
 !macroend
 
 Function CloseInstalledProcesses

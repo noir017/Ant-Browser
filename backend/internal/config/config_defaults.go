@@ -22,6 +22,32 @@ const (
 )
 
 const (
+	DefaultProxySpeedIntervalMinutes      = 30
+	DefaultProxyFailureRetryMinutes       = 5
+	DefaultProxySpeedConcurrency          = 5
+	DefaultProxyScheduledSpeedConcurrency = 5
+	MaxProxySpeedIntervalMinutes          = 24 * 60
+	MaxProxySpeedConcurrency              = 10
+)
+
+const (
+	// 虚拟分组健康状态默认参数。
+	DefaultVirtualGroupProbeIntervalMinutes  = 5
+	DefaultDegradeFailureThreshold           = 2
+	DefaultRestoreSuccessThreshold           = 2
+	DefaultRuntimeFailoverCooldownMinutes    = 10
+	DefaultRuntimeFailoverMaxAttempts        = 3
+	MaxVirtualGroupHealthThreshold           = 5
+	MaxRuntimeFailoverCooldownMinutes        = 24 * 60
+	MaxRuntimeFailoverAttempts               = 10
+)
+
+// MaxVirtualGroupProbeIntervalMinutes 是虚拟分组成员核验间隔的硬上限。
+// 需求是"至少每 3 小时核验一次"，这里压到 2 小时，给调度轮询粒度留出余量，
+// 保证即使配置写满上限，实际核验间隔也不会突破 3 小时。
+const MaxVirtualGroupProbeIntervalMinutes = 120
+
+const (
 	// CoreBackendFingerprintChromium 是历史唯一支持的浏览器内核后端。
 	// 空 core_backend 一律按它处理，保证旧数据行为不变。
 	CoreBackendFingerprintChromium = "fingerprint_chromium"
@@ -163,6 +189,9 @@ func normalizeConfig(config *Config) {
 	if config.Browser.DefaultBookmarks == nil {
 		config.Browser.DefaultBookmarks = []BrowserBookmark{}
 	}
+	if config.Browser.DeletedBookmarkURLs == nil {
+		config.Browser.DeletedBookmarkURLs = []string{}
+	}
 	if config.Browser.Cores == nil {
 		config.Browser.Cores = []BrowserCore{}
 	}
@@ -175,6 +204,56 @@ func normalizeConfig(config *Config) {
 	if config.ProxyCheck.BridgeStartTimeoutMs <= 0 {
 		config.ProxyCheck.BridgeStartTimeoutMs = defaultConfig.ProxyCheck.BridgeStartTimeoutMs
 	}
+	if config.ProxyCheck.SpeedIntervalMinutes <= 0 {
+		config.ProxyCheck.SpeedIntervalMinutes = defaultConfig.ProxyCheck.SpeedIntervalMinutes
+	} else if config.ProxyCheck.SpeedIntervalMinutes > MaxProxySpeedIntervalMinutes {
+		config.ProxyCheck.SpeedIntervalMinutes = MaxProxySpeedIntervalMinutes
+	}
+	if config.ProxyCheck.FailureRetryMinutes <= 0 {
+		config.ProxyCheck.FailureRetryMinutes = defaultConfig.ProxyCheck.FailureRetryMinutes
+	} else if config.ProxyCheck.FailureRetryMinutes > 24*60 {
+		config.ProxyCheck.FailureRetryMinutes = 24 * 60
+	}
+	if config.ProxyCheck.SpeedConcurrency <= 0 {
+		config.ProxyCheck.SpeedConcurrency = defaultConfig.ProxyCheck.SpeedConcurrency
+	} else if config.ProxyCheck.SpeedConcurrency > MaxProxySpeedConcurrency {
+		config.ProxyCheck.SpeedConcurrency = MaxProxySpeedConcurrency
+	}
+	if config.ProxyCheck.VirtualGroupHealthEnabled == nil {
+		config.ProxyCheck.VirtualGroupHealthEnabled = defaultConfig.ProxyCheck.VirtualGroupHealthEnabled
+	}
+	if config.ProxyCheck.RuntimeFailoverEnabled == nil {
+		config.ProxyCheck.RuntimeFailoverEnabled = defaultConfig.ProxyCheck.RuntimeFailoverEnabled
+	}
+	if config.ProxyCheck.VirtualGroupProbeIntervalMinutes <= 0 {
+		config.ProxyCheck.VirtualGroupProbeIntervalMinutes = defaultConfig.ProxyCheck.VirtualGroupProbeIntervalMinutes
+	} else if config.ProxyCheck.VirtualGroupProbeIntervalMinutes > MaxVirtualGroupProbeIntervalMinutes {
+		config.ProxyCheck.VirtualGroupProbeIntervalMinutes = MaxVirtualGroupProbeIntervalMinutes
+	}
+	config.ProxyCheck.DegradeFailureThreshold = clampInt(
+		config.ProxyCheck.DegradeFailureThreshold,
+		defaultConfig.ProxyCheck.DegradeFailureThreshold,
+		1,
+		MaxVirtualGroupHealthThreshold,
+	)
+	config.ProxyCheck.RestoreSuccessThreshold = clampInt(
+		config.ProxyCheck.RestoreSuccessThreshold,
+		defaultConfig.ProxyCheck.RestoreSuccessThreshold,
+		1,
+		MaxVirtualGroupHealthThreshold,
+	)
+	config.ProxyCheck.RuntimeFailoverCooldownMinutes = clampInt(
+		config.ProxyCheck.RuntimeFailoverCooldownMinutes,
+		defaultConfig.ProxyCheck.RuntimeFailoverCooldownMinutes,
+		1,
+		MaxRuntimeFailoverCooldownMinutes,
+	)
+	config.ProxyCheck.RuntimeFailoverMaxAttempts = clampInt(
+		config.ProxyCheck.RuntimeFailoverMaxAttempts,
+		defaultConfig.ProxyCheck.RuntimeFailoverMaxAttempts,
+		1,
+		MaxRuntimeFailoverAttempts,
+	)
 	if strings.TrimSpace(config.ProxyCheck.SpeedTargetID) == "" {
 		config.ProxyCheck.SpeedTargetID = defaultConfig.ProxyCheck.SpeedTargetID
 	}
@@ -184,6 +263,11 @@ func normalizeConfig(config *Config) {
 	if len(config.ProxyCheck.Targets) == 0 {
 		config.ProxyCheck.Targets = append([]ProxyCheckTarget{}, defaultConfig.ProxyCheck.Targets...)
 	}
+
+	if config.ProxySourceRefresh.Enabled == nil {
+		config.ProxySourceRefresh.Enabled = defaultConfig.ProxySourceRefresh.Enabled
+	}
+	config.Browser.ProxySourceIgnoredNames = normalizeSourceIgnoredNames(config.Browser.ProxySourceIgnoredNames)
 
 	if config.LaunchServer.Port <= 0 {
 		config.LaunchServer.Port = defaultConfig.LaunchServer.Port
@@ -209,6 +293,16 @@ func normalizeConfig(config *Config) {
 	} else {
 		config.Backup.Channels.OpenList.RemotePath = strings.TrimSpace(config.Backup.Channels.OpenList.RemotePath)
 	}
+	config.Backup.Channels.OpenList.AuthMode = strings.ToLower(strings.TrimSpace(config.Backup.Channels.OpenList.AuthMode))
+	if config.Backup.Channels.OpenList.AuthMode != "basic" && config.Backup.Channels.OpenList.AuthMode != "token" {
+		if strings.TrimSpace(config.Backup.Channels.OpenList.Username) != "" {
+			config.Backup.Channels.OpenList.AuthMode = "basic"
+		} else {
+			config.Backup.Channels.OpenList.AuthMode = "token"
+		}
+	}
+	config.Backup.Channels.OpenList.Username = strings.TrimSpace(config.Backup.Channels.OpenList.Username)
+	config.Backup.Channels.OpenList.Password = strings.TrimSpace(config.Backup.Channels.OpenList.Password)
 	config.Backup.Channels.OpenList.Token = strings.TrimSpace(config.Backup.Channels.OpenList.Token)
 	if config.Backup.Channels.OpenList.UploadRateLimitMBps < 0 {
 		config.Backup.Channels.OpenList.UploadRateLimitMBps = defaultConfig.Backup.Channels.OpenList.UploadRateLimitMBps
@@ -327,11 +421,25 @@ func DefaultConfig() *Config {
 			StartStableWindowMs:    1200,
 			DefaultConnectorType:   BrowserConnectorXray,
 		},
+		ProxySourceRefresh: ProxySourceRefreshConfig{
+			Enabled: boolPtr(true),
+		},
 		ProxyCheck: ProxyCheckConfig{
 			BridgeStartTimeoutMs: 15000,
+			SpeedIntervalMinutes: DefaultProxySpeedIntervalMinutes,
+			FailureRetryMinutes:  DefaultProxyFailureRetryMinutes,
+			SpeedConcurrency:     DefaultProxySpeedConcurrency,
 			SpeedTargetID:        "",
 			IPHealthTargetID:     "",
 			Targets:              []ProxyCheckTarget{},
+
+			VirtualGroupHealthEnabled:        boolPtr(true),
+			VirtualGroupProbeIntervalMinutes: DefaultVirtualGroupProbeIntervalMinutes,
+			DegradeFailureThreshold:          DefaultDegradeFailureThreshold,
+			RestoreSuccessThreshold:          DefaultRestoreSuccessThreshold,
+			RuntimeFailoverEnabled:           boolPtr(true),
+			RuntimeFailoverCooldownMinutes:   DefaultRuntimeFailoverCooldownMinutes,
+			RuntimeFailoverMaxAttempts:       DefaultRuntimeFailoverMaxAttempts,
 		},
 		Logging: LoggingConfig{
 			Level:           "info",
@@ -494,4 +602,45 @@ func normalizeMCPPath(value string) string {
 func boolPtr(value bool) *bool {
 	v := value
 	return &v
+}
+
+// normalizeSourceIgnoredNames 清洗订阅源忽略名单：去掉空 key/空名称，空列表整体剔除。
+func normalizeSourceIgnoredNames(input map[string][]string) map[string][]string {
+	if len(input) == 0 {
+		return nil
+	}
+	result := make(map[string][]string, len(input))
+	for sourceID, names := range input {
+		key := strings.TrimSpace(sourceID)
+		if key == "" {
+			continue
+		}
+		cleaned := make([]string, 0, len(names))
+		for _, name := range names {
+			if trimmed := strings.TrimSpace(name); trimmed != "" {
+				cleaned = append(cleaned, trimmed)
+			}
+		}
+		if len(cleaned) > 0 {
+			result[key] = cleaned
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+// clampInt 未配置（<=0）时回落到默认值，再钳制到 [min, max]。
+func clampInt(value int, fallback int, min int, max int) int {
+	if value <= 0 {
+		value = fallback
+	}
+	if value < min {
+		return min
+	}
+	if value > max {
+		return max
+	}
+	return value
 }

@@ -97,7 +97,7 @@ func (m *ClashManager) ensureNodeBridgeContext(ctx context.Context, proxyConfig 
 		return "direct://", "", nil
 	}
 
-	key := computeNodeKey(src + "\x00mihomo")
+	key := ComputeBridgeKey(src, "", ProxyKernelMihomo)
 	unlock := m.lockLaunchForKey(key)
 	defer unlock()
 
@@ -276,7 +276,7 @@ func (m *ClashManager) TestNodeDelay(proxyId string, proxies []config.BrowserPro
 	if _, err := m.EnsureNodeBridge(src, proxies, proxyId); err != nil {
 		return TestResult{ProxyId: proxyId, Ok: false, Engine: "mihomo", Error: err.Error()}
 	}
-	key := computeNodeKey(src + "\x00mihomo")
+	key := ComputeBridgeKey(src, "", ProxyKernelMihomo)
 	m.mu.Lock()
 	bridge := m.NodeBridges[key]
 	m.mu.Unlock()
@@ -348,6 +348,7 @@ func (m *ClashManager) watchMihomoNodeBridge(bridge *MihomoNodeBridge) {
 	go func() {
 		err := bridge.Cmd.Wait()
 		m.mu.Lock()
+		unexpected := bridge.Running && m.NodeBridges[bridge.NodeKey] == bridge
 		bridge.Running = false
 		bridge.ExitErr = err
 		if current := m.NodeBridges[bridge.NodeKey]; current == bridge {
@@ -355,6 +356,12 @@ func (m *ClashManager) watchMihomoNodeBridge(bridge *MihomoNodeBridge) {
 		}
 		m.mu.Unlock()
 		close(bridge.ExitDone)
+		if unexpected && m.OnNodeBridgeDied != nil {
+			if err == nil {
+				err = fmt.Errorf("mihomo 桥接进程意外退出")
+			}
+			m.OnNodeBridgeDied(bridge.NodeKey, err)
+		}
 	}()
 }
 

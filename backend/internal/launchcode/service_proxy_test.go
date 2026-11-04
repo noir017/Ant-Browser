@@ -2,6 +2,7 @@ package launchcode
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -16,10 +17,13 @@ import (
 
 type fakeProxyProvider struct {
 	proxies []config.BrowserProxy
+	listErr error
 	cores   []config.BrowserCore
 }
 
-func (f fakeProxyProvider) ListProxyNodes() []config.BrowserProxy { return f.proxies }
+func (f fakeProxyProvider) ListProxyNodes() ([]config.BrowserProxy, error) {
+	return f.proxies, f.listErr
+}
 
 func (f fakeProxyProvider) TestProxyNodeSpeed(id string) ProxySpeedResult {
 	return ProxySpeedResult{ProxyID: id, Ok: true, LatencyMs: 42}
@@ -50,6 +54,17 @@ func TestProxyToolsUnavailableWithoutProvider(t *testing.T) {
 	}
 	if _, err := server.CheckProxyHealth("p1"); err == nil {
 		t.Error("CheckProxyHealth err = nil, want unavailable")
+	}
+}
+
+// TestListProxiesPropagatesLoadError 确认代理池加载失败时如实报错，
+// 而不是返回空列表让调用方误以为代理池为空。
+func TestListProxiesPropagatesLoadError(t *testing.T) {
+	server := NewLaunchServer(nil, nil, nil, 0)
+	server.SetProxyProvider(fakeProxyProvider{listErr: errors.New("load failed")})
+
+	if proxies, err := server.ListProxies(); err == nil {
+		t.Errorf("ListProxies = %+v, nil; want the load error", proxies)
 	}
 }
 

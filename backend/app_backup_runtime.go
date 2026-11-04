@@ -3,6 +3,7 @@ package backend
 import (
 	"ant-chrome/backend/internal/browser"
 	"errors"
+	"fmt"
 	"os/exec"
 	"sort"
 	"strings"
@@ -17,10 +18,17 @@ func (a *App) backupRunningProfileNames() []string {
 		return nil
 	}
 
+	a.browserMgr.InitData()
 	profiles := a.browserMgr.List()
+	a.browserMgr.Mutex.Lock()
+	trackedProcesses := make(map[string]*exec.Cmd, len(a.browserMgr.BrowserProcesses))
+	for profileID, command := range a.browserMgr.BrowserProcesses {
+		trackedProcesses[profileID] = command
+	}
+	a.browserMgr.Mutex.Unlock()
 	names := make([]string, 0)
 	for _, profile := range profiles {
-		if !profile.Running {
+		if !browserProfileHasRuntime(a, &profile, trackedProcesses[profile.ProfileId]) {
 			continue
 		}
 		name := strings.TrimSpace(profile.ProfileName)
@@ -62,7 +70,10 @@ func (a *App) backupStopRuntimeForMaintenance() error {
 			if profile == nil && cmd == nil {
 				continue
 			}
-			if cmd == nil && (profile == nil || (!profile.Running && profile.Pid <= 0 && profile.DebugPort <= 0)) {
+			if cmd == nil && profile == nil {
+				continue
+			}
+			if profile != nil && !browserProfileHasRuntime(a, profile, cmd) && cmd == nil && !profile.Running && profile.Pid <= 0 && profile.DebugPort <= 0 && profile.WindowMarkerCode == "" {
 				continue
 			}
 			item := runtimeProfile{}
@@ -162,12 +173,20 @@ func (a *App) backupReloadAfterMutation() error {
 		a.singboxMgr.Config = a.config
 	}
 
-	a.migrateToSQLite()
+	if err := a.migrateToSQLite(); err != nil {
+		a.resumeBackgroundTasks()
+		a.ensureSpeedScheduler()
+		return fmt.Errorf(`备份变更后的数据库迁移失败: %w`, err)
+	}
 	if a.browserMgr != nil {
 		a.browserMgr.InitData()
 	}
 	a.autoDetectCores()
-	a.loadProxies()
+	if err := a.loadProxies(); err != nil {
+		a.resumeBackgroundTasks()
+		a.ensureSpeedScheduler()
+		return fmt.Errorf(`备份变更后的代理数据加载失败: %w`, err)
+	}
 
 	if a.launchCodeSvc != nil {
 		_ = a.launchCodeSvc.LoadAll()
