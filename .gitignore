@@ -145,3 +145,8 @@ accounts.yml
 *.backup
 *.old
 *.orig
+
+# 本机 agent 配置与一次性脚本：不进版本库
+.agents/
+.mcp.json
+project-scripts/
