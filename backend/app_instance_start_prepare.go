@@ -35,6 +35,7 @@ type browserStartPlan struct {
 	effectiveProxy       string
 	acquiredProxyBridge  profileProxyBridgeRef
 	releaseProxyBridge   bool
+	extensionPaths       []string
 	extensionWarning     string
 	assignedDebugPort    int
 	startReadyTimeout    time.Duration
@@ -193,6 +194,7 @@ func (a *App) prepareBrowserStartPlan(input browserStartInput, profile *BrowserP
 		effectiveProxy:       effectiveProxy,
 		acquiredProxyBridge:  acquiredProxyBridge,
 		releaseProxyBridge:   releaseProxyBridge,
+		extensionPaths:       extensionPaths,
 		extensionWarning:     extensionWarning,
 		assignedDebugPort:    assignedDebugPort,
 		startReadyTimeout:    startReadyTimeout,

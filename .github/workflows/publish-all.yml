@@ -1,0 +1,176 @@
+name: Publish All Platforms
+
+# 一次性打包 Windows / Linux / macOS，全部成功后创建 tag 并发布 Release。
+# 手动触发：Actions -> Publish All Platforms -> Run workflow（version 留空则读 wails.json）。
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 版本号，例如 1.9.1；留空则读取 wails.json
+        required: false
+        type: string
+  push:
+    tags:
+      - "v*"
+      - "V*"
+      - "[0-9]*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-all-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Resolve version
+    runs-on: ubuntu-24.04
+    outputs:
+      value: ${{ steps.resolve.outputs.value }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve package version
+        id: resolve
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version="${INPUT_VERSION:-}"
+          version="${version#v}"
+          version="${version#V}"
+          if [[ -z "$version" && "$GITHUB_REF_NAME" =~ ^[vV]?([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+            version="${BASH_REMATCH[1]}"
+          fi
+          if [[ -z "$version" ]]; then
+            version="$(node -p "require('./wails.json').info.productVersion")"
+          fi
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "::error::版本号格式无效: $version（期望 1.9.1 这种形式）"
+            exit 1
+          fi
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+          echo "package version: $version"
+
+  windows:
+    name: Build Windows
+    needs: version
+    uses: ./.github/workflows/publish-windows.yml
+    with:
+      version: ${{ needs.version.outputs.value }}
+
+  linux:
+    name: Build Linux
+    needs: version
+    uses: ./.github/workflows/publish-linux.yml
+    with:
+      version: ${{ needs.version.outputs.value }}
+
+  macos:
+    name: Build macOS
+    needs: version
+    uses: ./.github/workflows/publish-macos.yml
+    with:
+      version: ${{ needs.version.outputs.value }}
+
+  release:
+    name: Create tag and release
+    needs: [version, windows, linux, macos]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Extract release notes
+        id: notes
+        env:
+          VERSION: ${{ needs.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          : > release-notes.md
+          notes_src=""
+          for candidate in "docs/changelogs/${VERSION}.md" "docs/changelogs/v${VERSION}.md"; do
+            if [ -f "$candidate" ]; then
+              notes_src="$candidate"
+              break
+            fi
+          done
+          if [ -n "$notes_src" ]; then
+            echo "使用 $notes_src"
+            tr -d '\r' < "$notes_src" | sed -e '/./,$!d' > release-notes.md
+          elif [ -f CHANGELOG.md ]; then
+            # 兼容：docs/changelogs 下没有该版本时，从 CHANGELOG.md 对应段落提取
+            echo "docs/changelogs/${VERSION}.md 不存在，尝试从 CHANGELOG.md 提取"
+            awk -v ver="$VERSION" '
+              {
+                if (!found) {
+                  if ($0 ~ /^##[ \t]+/) {
+                    title = $0
+                    sub(/^##[ \t]+/, "", title)
+                    sub(/[ \t].*$/, "", title)
+                    sub(/^[vV]/, "", title)
+                    if (title == ver || index(title, ver "-") == 1 || index(title, ver "+") == 1) { found = 1 }
+                  }
+                  next
+                }
+                if ($0 ~ /^##[ \t]+/) { exit }
+                print
+              }
+            ' CHANGELOG.md | tr -d '\r' | sed -e '/./,$!d' > release-notes.md
+          fi
+          if [ -z "$(tr -d '[:space:]' < release-notes.md)" ]; then
+            echo "::warning::没有找到 ${VERSION} 的更新日志，回退到 GitHub 自动生成"
+            rm -f release-notes.md
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "已读取 ${VERSION} 更新日志："
+            cat release-notes.md
+          fi
+
+      - name: Create tag and upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.version.outputs.value }}
+          NOTES_FOUND: ${{ steps.notes.outputs.found }}
+        run: |
+          set -euo pipefail
+          tag="v${VERSION}"
+          files=()
+          for f in release-artifacts/*; do
+            [ -f "$f" ] && files+=("$f")
+          done
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::没有任何发布产物"
+            exit 1
+          fi
+          printf '待上传: %s\n' "${files[@]}"
+
+          notes_args=(--generate-notes)
+          if [ "$NOTES_FOUND" = "true" ]; then
+            notes_args=(--notes-file release-notes.md)
+          fi
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            # release 已存在（重跑），有 CHANGELOG 条目时刷新正文；gh release edit 不支持 --generate-notes
+            if [ "$NOTES_FOUND" = "true" ]; then
+              gh release edit "$tag" --notes-file release-notes.md
+            fi
+          elif gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" >/dev/null 2>&1; then
+            # tag 已存在（上次打包残留），直接复用，不移动指向
+            gh release create "$tag" "${notes_args[@]}" --title "$tag"
+          else
+            gh release create "$tag" --target "$GITHUB_SHA" "${notes_args[@]}" --title "$tag"
+          fi
+          gh release upload "$tag" "${files[@]}" --clobber

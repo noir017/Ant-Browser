@@ -1,15 +1,25 @@
 name: Publish macOS Packages
 
 on:
+  workflow_call:
+    inputs:
+      version:
+        description: 版本号，例如 1.9.1；留空则读取 wails.json
+        required: false
+        type: string
   workflow_dispatch:
     inputs:
       version:
-        description: Optional package version override, for example 1.9.0
+        description: 版本号，例如 1.9.1；留空则读取 wails.json
         required: false
         type: string
 
 permissions:
   contents: read
+
+concurrency:
+  group: publish-macos-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -46,9 +56,28 @@ jobs:
       - name: Add Go bin to PATH
         run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
+      - name: Resolve package version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ inputs.version }}"
+          if [[ -z "$version" && "$GITHUB_REF_NAME" =~ ^[vV]?([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+            version="${BASH_REMATCH[1]}"
+          fi
+          if [[ -z "$version" ]]; then
+            version="$(node -p "require('./wails.json').info.productVersion" 2>/dev/null || true)"
+          fi
+          if [[ -z "$version" ]]; then
+            echo "::error::无法从 ref '$GITHUB_REF_NAME' 解析版本号，请在 workflow_dispatch 中显式传 version"
+            exit 1
+          fi
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+          echo "package version: $version"
+
       - name: Build unsigned macOS package
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ steps.version.outputs.value }}
         run: |
           set -euo pipefail
           args=(--arch "${{ matrix.arch }}")

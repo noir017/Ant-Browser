@@ -3,6 +3,7 @@ package database
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -66,6 +67,43 @@ func TestReconcileAddsCoreColumnsDespiteHigherVersionWatermark(t *testing.T) {
 	}
 	if report.AppliedStmts != 0 {
 		t.Fatalf("second Reconcile applied %d stmts, want 0", report.AppliedStmts)
+	}
+}
+
+// 早先按 33 落地内核字段迁移的库：上游的 33 会被跳过，内核迁移改号后重跑不能报错，
+// 上游 33 建的表由 Reconcile 补上。
+func TestMigrateForkDatabaseWithCoreMigrationAt33(t *testing.T) {
+	db, err := NewDB(filepath.Join(t.TempDir(), "fork.db"))
+	if err != nil {
+		t.Fatalf("NewDB returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate returned error: %v", err)
+	}
+	conn := db.GetConn()
+	coreMigration := coreColumnsMigrationVersion(t)
+	// 退回到旧状态：33 已记录（内核字段），上游 33 的表不存在，新内核迁移号未记录
+	for _, stmt := range []string{
+		`DROP TABLE browser_builtin_extension_superseded`,
+		`DELETE FROM schema_migrations WHERE version = ` + strconv.Itoa(coreMigration),
+	} {
+		if _, err := conn.Exec(stmt); err != nil {
+			t.Fatalf("rewind fork state (%s): %v", stmt, err)
+		}
+	}
+
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("second Migrate returned error: %v", err)
+	}
+	if _, err := db.Reconcile(t.TempDir()); err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+	assertCoreColumns(t, db)
+	var name string
+	if err := conn.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name='browser_builtin_extension_superseded'`).Scan(&name); err != nil {
+		t.Fatalf("browser_builtin_extension_superseded not restored: %v", err)
 	}
 }
 

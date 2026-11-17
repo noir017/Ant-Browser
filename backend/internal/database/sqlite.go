@@ -388,9 +388,20 @@ var migrations = []migration{
 		},
 	},
 	{
-		// 18-23 被上游 feature 分支占用，这里取主线下一个号。
-		// 版本号撞车被跳过时，由启动期 Reconcile 按本迁移语句补齐新增列。
 		version: 33,
+		desc:    "添加内置插件被手动安装取代的标记表",
+		stmts: []string{
+			`CREATE TABLE IF NOT EXISTS browser_builtin_extension_superseded (
+				builtin_id   TEXT PRIMARY KEY,
+				extension_id TEXT NOT NULL,
+				created_at   TEXT NOT NULL DEFAULT ''
+			)`,
+		},
+	},
+	{
+		// 上游主线已用到 33，这里取下一个号。早先按 33 落地本迁移的库会跳过上游的 33，
+		// 缺的表和列由启动期 Reconcile 按迁移语句补齐；本迁移重跑时列已存在会被忽略。
+		version: 34,
 		desc:    "内核表添加后端类型与环境变量字段",
 		stmts: []string{
 			`ALTER TABLE browser_cores ADD COLUMN core_backend TEXT NOT NULL DEFAULT ''`,
@@ -418,15 +429,19 @@ func NewDB(dbPath string) (*DB, error) {
 	conn.SetMaxIdleConns(1)
 
 	if err := conn.Ping(); err != nil {
+		_ = conn.Close()
 		return nil, fmt.Errorf("连接数据库失败: %w", err)
 	}
 
 	// WAL 模式：写不阻塞读
 	if _, err := conn.Exec(`PRAGMA journal_mode=WAL`); err != nil {
+		// 失败时必须关闭连接：否则 Windows 上库文件被占用，自愈重建无法移走原文件。
+		_ = conn.Close()
 		return nil, fmt.Errorf("设置 WAL 模式失败: %w", err)
 	}
 	// 开启外键约束
 	if _, err := conn.Exec(`PRAGMA foreign_keys=ON`); err != nil {
+		_ = conn.Close()
 		return nil, fmt.Errorf("开启外键约束失败: %w", err)
 	}
 

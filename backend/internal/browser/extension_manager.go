@@ -116,10 +116,10 @@ func (m *Manager) LookupExtensionWithHTTPClient(query string, client *http.Clien
 }
 
 func (m *Manager) InstallExtensionFromWebStore(ctx context.Context, query string) (Extension, error) {
-	return m.InstallExtensionFromWebStoreWithHTTPClient(ctx, query, nil)
+	return m.InstallExtensionFromWebStoreWithHTTPClient(ctx, query, nil, nil)
 }
 
-func (m *Manager) InstallExtensionFromWebStoreWithHTTPClient(ctx context.Context, query string, client *http.Client) (Extension, error) {
+func (m *Manager) InstallExtensionFromWebStoreWithHTTPClient(ctx context.Context, query string, client *http.Client, onBuiltinConflict BuiltinConflictHandler) (Extension, error) {
 	extensionID := NormalizeExtensionID(query)
 	if extensionID == "" {
 		return Extension{}, fmt.Errorf("请输入 Chrome 插件 ID 或 Chrome Web Store 链接")
@@ -128,10 +128,10 @@ func (m *Manager) InstallExtensionFromWebStoreWithHTTPClient(ctx context.Context
 	if err != nil {
 		return Extension{}, err
 	}
-	return m.InstallExtensionPackageBytes(extensionID, BuildChromeWebStoreURL(extensionID), data)
+	return m.InstallExtensionPackageBytes(extensionID, BuildChromeWebStoreURL(extensionID), data, onBuiltinConflict)
 }
 
-func (m *Manager) InstallExtensionPackageBytes(extensionID string, sourceURL string, data []byte) (Extension, error) {
+func (m *Manager) InstallExtensionPackageBytes(extensionID string, sourceURL string, data []byte, onBuiltinConflict BuiltinConflictHandler) (Extension, error) {
 	if len(data) == 0 {
 		return Extension{}, fmt.Errorf("插件包为空")
 	}
@@ -151,22 +151,41 @@ func (m *Manager) InstallExtensionPackageBytes(extensionID string, sourceURL str
 		return Extension{}, err
 	}
 
-	resolvedID := NormalizeExtensionID(extensionID)
-	if resolvedID == "" {
-		resolvedID = extensionIDFromCRX(data)
-		if resolvedID == "" {
-			resolvedID = extensionIDFromManifest(manifestData)
-		}
+	explicitID := NormalizeExtensionID(extensionID)
+	if explicitID == "" {
+		explicitID = extensionIDFromCRX(data)
 	}
+	resolvedID := m.resolveExtensionInstallID(explicitID, manifestData)
 	if resolvedID == "" {
 		return Extension{}, fmt.Errorf("无法识别插件 ID")
+	}
+	// 运行中的实例正通过 --load-extension 使用这个目录，覆盖安装会把目录整个换掉。
+	// 与删除插件保持一致：先拦下来，让用户显式停止实例。
+	if err := m.ensureExtensionInstallAllowed(resolvedID); err != nil {
+		return Extension{}, err
+	}
+
+	localeMessages := readExtensionLocaleMessagesFromZip(zipData, manifest)
+	extension := Extension{
+		ExtensionID:  resolvedID,
+		Name:         resolveExtensionMessage(resolveExtensionName(manifest, resolvedID), localeMessages),
+		Version:      strings.TrimSpace(manifest.Version),
+		Description:  resolveExtensionDescription(manifest, localeMessages),
+		IconDataURL:  readExtensionIconDataURLFromZip(zipData, manifest),
+		ManifestJSON: string(manifestData),
+		SourceURL:    strings.TrimSpace(sourceURL),
+		InstallMode:  ExtensionInstallModePersistent,
+		Enabled:      true,
+	}
+	pendingBuiltin, err := m.prepareBuiltinReplacement(&extension, onBuiltinConflict)
+	if err != nil {
+		return Extension{}, err
 	}
 
 	installDir := filepath.Join(m.ResolveRelativePath(filepath.Join("data", extensionsRootDir)), resolvedID)
 	if err := replaceExtensionDirFromZip(zipData, installDir); err != nil {
 		return Extension{}, err
 	}
-	installMode := ExtensionInstallModePersistent
 	packagePath := ""
 	packageHash := ""
 	if isCRXExtensionPackage(data) {
@@ -174,28 +193,17 @@ func (m *Manager) InstallExtensionPackageBytes(extensionID string, sourceURL str
 		if err != nil {
 			return Extension{}, err
 		}
-		installMode = ExtensionInstallModePersistent
 	}
 
-	localeMessages := readExtensionLocaleMessagesFromZip(zipData, manifest)
-	manifestJSON := string(manifestData)
-	extension := Extension{
-		ExtensionID:  resolvedID,
-		Name:         resolveExtensionMessage(resolveExtensionName(manifest, resolvedID), localeMessages),
-		Version:      strings.TrimSpace(manifest.Version),
-		Description:  resolveExtensionDescription(manifest, localeMessages),
-		IconDataURL:  readExtensionIconDataURLFromZip(zipData, manifest),
-		ManifestJSON: manifestJSON,
-		SourceURL:    strings.TrimSpace(sourceURL),
-		InstallDir:   installDir,
-		InstallMode:  installMode,
-		PackagePath:  packagePath,
-		PackageHash:  packageHash,
-		Enabled:      true,
-	}
+	extension.InstallDir = installDir
+	extension.PackagePath = packagePath
+	extension.PackageHash = packageHash
 	if m.ExtensionDAO != nil {
 		if err := m.ExtensionDAO.Upsert(extension); err != nil {
 			return Extension{}, err
+		}
+		if err := m.settleBuiltinReplacement(pendingBuiltin, resolvedID); err != nil {
+			return Extension{}, fmt.Errorf("插件已安装，但替换内置版本未完成: %w", err)
 		}
 		stored, err := m.ExtensionDAO.Get(resolvedID)
 		if err == nil {
@@ -205,7 +213,7 @@ func (m *Manager) InstallExtensionPackageBytes(extensionID string, sourceURL str
 	return extension, nil
 }
 
-func (m *Manager) InstallExtensionPackageFile(path string) (Extension, error) {
+func (m *Manager) InstallExtensionPackageFile(path string, onBuiltinConflict BuiltinConflictHandler) (Extension, error) {
 	normalizedPath := strings.TrimSpace(path)
 	if normalizedPath == "" {
 		return Extension{}, fmt.Errorf("插件文件路径不能为空")
@@ -214,10 +222,10 @@ func (m *Manager) InstallExtensionPackageFile(path string) (Extension, error) {
 	if err != nil {
 		return Extension{}, fmt.Errorf("读取插件文件失败: %w", err)
 	}
-	return m.InstallExtensionPackageBytes("", normalizedPath, data)
+	return m.InstallExtensionPackageBytes("", normalizedPath, data, onBuiltinConflict)
 }
 
-func (m *Manager) InstallExtensionDirectory(sourceDir string) (Extension, error) {
+func (m *Manager) InstallExtensionDirectory(sourceDir string, onBuiltinConflict BuiltinConflictHandler) (Extension, error) {
 	normalizedDir := strings.TrimSpace(sourceDir)
 	if normalizedDir == "" {
 		return Extension{}, fmt.Errorf("插件目录不能为空")
@@ -231,9 +239,11 @@ func (m *Manager) InstallExtensionDirectory(sourceDir string) (Extension, error)
 	if err != nil {
 		return Extension{}, err
 	}
-	extensionID := extensionIDFromManifest(manifestData)
-	installDir := filepath.Join(m.ResolveRelativePath(filepath.Join("data", extensionsRootDir)), extensionID)
-	if err := copyExtensionDirectory(normalizedDir, installDir); err != nil {
+	extensionID := m.resolveExtensionInstallID("", manifestData)
+	if extensionID == "" {
+		return Extension{}, fmt.Errorf("无法识别插件 ID")
+	}
+	if err := m.ensureExtensionInstallAllowed(extensionID); err != nil {
 		return Extension{}, err
 	}
 	localeMessages := readExtensionLocaleMessagesFromDir(normalizedDir, manifest)
@@ -245,13 +255,25 @@ func (m *Manager) InstallExtensionDirectory(sourceDir string) (Extension, error)
 		IconDataURL:  readExtensionIconDataURLFromDir(normalizedDir, manifest),
 		ManifestJSON: string(manifestData),
 		SourceURL:    normalizedDir,
-		InstallDir:   installDir,
 		InstallMode:  ExtensionInstallModePersistent,
 		Enabled:      true,
 	}
+	pendingBuiltin, err := m.prepareBuiltinReplacement(&extension, onBuiltinConflict)
+	if err != nil {
+		return Extension{}, err
+	}
+
+	installDir := filepath.Join(m.ResolveRelativePath(filepath.Join("data", extensionsRootDir)), extensionID)
+	if err := copyExtensionDirectory(normalizedDir, installDir); err != nil {
+		return Extension{}, err
+	}
+	extension.InstallDir = installDir
 	if m.ExtensionDAO != nil {
 		if err := m.ExtensionDAO.Upsert(extension); err != nil {
 			return Extension{}, err
+		}
+		if err := m.settleBuiltinReplacement(pendingBuiltin, extensionID); err != nil {
+			return Extension{}, fmt.Errorf("插件已安装，但替换内置版本未完成: %w", err)
 		}
 		if stored, err := m.ExtensionDAO.Get(extensionID); err == nil {
 			return stored, nil
@@ -260,9 +282,74 @@ func (m *Manager) InstallExtensionDirectory(sourceDir string) (Extension, error)
 	return extension, nil
 }
 
+// resolveExtensionInstallID 解析安装目标的插件 ID。
+//
+// 优先级：CRX 内嵌 ID > 已安装插件中"同一身份"的 ID > 按 manifest 身份哈希生成。
+// 中间这一步是升级覆盖的关键：manifest 去掉 version 后再比对，
+// 同一插件的 1.0.0 → 2.0.0 会落到同一个 ID 上，走覆盖安装而不是新增一条记录。
+func (m *Manager) resolveExtensionInstallID(explicitID string, manifestData []byte) string {
+	explicit := NormalizeExtensionID(explicitID)
+	// 同一插件可能从不同渠道装进来：商店（ID 来自 CRX 公钥）与本地 crx/zip
+	// （ID 来自 manifest 身份哈希）。先按身份找已装记录，命中就复用它的 ID，
+	// 避免同一插件在列表里出现两份、实例里绑的是其中一个。
+	if identityID := m.findExtensionIDByIdentity(manifestData); identityID != "" {
+		if explicit == "" || !m.extensionExists(explicit) {
+			return identityID
+		}
+		return explicit
+	}
+	if explicit != "" {
+		return explicit
+	}
+	return extensionIDFromIdentityManifest(manifestData)
+}
+
+func (m *Manager) findExtensionIDByIdentity(manifestData []byte) string {
+	if m == nil || m.ExtensionDAO == nil {
+		return ""
+	}
+	existing, err := m.ExtensionDAO.List()
+	if err != nil {
+		return ""
+	}
+	identity := string(extensionIdentityManifest(manifestData))
+	for _, item := range existing {
+		if strings.TrimSpace(item.ManifestJSON) == "" {
+			continue
+		}
+		if string(extensionIdentityManifest([]byte(item.ManifestJSON))) == identity {
+			return item.ExtensionID
+		}
+	}
+	return ""
+}
+
+func (m *Manager) extensionExists(extensionID string) bool {
+	if m == nil || m.ExtensionDAO == nil {
+		return false
+	}
+	if _, err := m.ExtensionDAO.Get(extensionID); err != nil {
+		return false
+	}
+	return true
+}
+
+
+// ensureExtensionInstallAllowed 覆盖安装前确认没有运行中的实例正在加载该插件目录。
+func (m *Manager) ensureExtensionInstallAllowed(extensionID string) error {
+	if m == nil || strings.TrimSpace(extensionID) == "" {
+		return nil
+	}
+	if err := m.EnsureExtensionUnusedByRunningProfiles(extensionID); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (m *Manager) EnabledExtensionDirs() []string {
 	return nil
 }
+
 
 func (m *Manager) EnabledExtensionDirsForProfile(profileID string) []string {
 	return nil
