@@ -156,6 +156,7 @@ accounts.yml
 .agents/
 .mcp.json
 project-scripts/
+.worktrees/
 
 # Runtime lock
 app-instance.lock
