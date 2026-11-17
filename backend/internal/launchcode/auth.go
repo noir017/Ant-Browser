@@ -69,7 +69,7 @@ func (s *LaunchServer) APIAuthEnabled() bool {
 //
 // 除了历史上的 /api/ 前缀，MCP 端点也必须纳入：它暴露的是与 /api/* 同等
 // （甚至更完整）的能力面，漏掉就等于开了一个绕过鉴权的后门。
-// 兜底路由 "/" 上的 CDP 反向代理不在此列——它沿用原有行为，仅靠 localhost 限制。
+// 兜底路由 "/" 上的 CDP 反向代理不在此判断，由转发 handler 自己处理鉴权。
 func (s *LaunchServer) requiresAPIAuth(path string) bool {
 	if strings.HasPrefix(path, "/api/") {
 		return true

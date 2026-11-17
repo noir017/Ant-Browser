@@ -110,23 +110,6 @@ func TestAPIAuthStillCoversAPIPrefix(t *testing.T) {
 	}
 }
 
-// TestCDPProxyRemainsUnauthenticated 固化既有行为：
-// 兜底的 CDP 反向代理不参与 API Key 鉴权，只受 localhost 限制保护。
-// 这不是新引入的问题，但值得用测试写明，避免被误认为遗漏。
-func TestCDPProxyRemainsUnauthenticated(t *testing.T) {
-	server := newMCPTestServer(t, "/mcp")
-	server.SetAPIAuthConfig(APIAuthConfig{Enabled: true, APIKey: "secret-key"})
-	handler := NewTestHandler(server)
-
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/json/version", nil))
-
-	// 未鉴权即可抵达代理逻辑；没有活动实例所以是 503 而不是 401。
-	if recorder.Code == http.StatusUnauthorized {
-		t.Error("CDP proxy is now behind API auth; this changes existing behavior")
-	}
-}
-
 func TestRequiresAPIAuthPathMatching(t *testing.T) {
 	server := newMCPTestServer(t, "/mcp")
 
