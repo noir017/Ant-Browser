@@ -18,6 +18,7 @@ import (
 
 // PageState 是每次页面操作后回传的页面状态。
 // 统一带上 url/title，模型不必为了确认「现在在哪」再多调一次快照。
+// 改页面的动作（goto/click/fill 等）在 Node 侧等页面稳定后才取这两个值。
 type PageState struct {
 	URL   string `json:"url,omitempty"`
 	Title string `json:"title,omitempty"`
@@ -27,7 +28,13 @@ type pageOutput struct {
 	ProfileID string    `json:"profileId"`
 	OK        bool      `json:"ok"`
 	Page      PageState `json:"page"`
-	Error     string    `json:"error,omitempty"`
+	// 以下仅改页面的动作返回：动作后已等页面稳定。
+	Navigated bool     `json:"navigated,omitempty" jsonschema:"动作引发了跳转，page.url 是新地址"`
+	Changed   *bool    `json:"changed,omitempty" jsonschema:"动作后 DOM 是否有变动"`
+	Busy      bool     `json:"busy,omitempty" jsonschema:"等到上限页面仍在加载或变化"`
+	NewTabs   []string `json:"newTabs,omitempty" jsonschema:"动作新开的标签页 URL"`
+	Snapshot  string   `json:"snapshot,omitempty" jsonschema:"动作后的快照（传了 snapshot 参数时）"`
+	Error     string   `json:"error,omitempty"`
 }
 
 // pageCall 是所有页面工具的公共执行路径。
@@ -93,11 +100,22 @@ func runPageAction(p PageProvider, selector *Selector, timeoutMs int, action str
 		return toolError(stepErr), pageOutput{ProfileID: result.ProfileID, Error: stepErr.Error()}, payload
 	}
 
-	return nil, pageOutput{
-		ProfileID: result.ProfileID,
-		OK:        true,
-		Page:      pageStateOf(payload),
-	}, payload
+	out := pageOutput{ProfileID: result.ProfileID, OK: true, Page: pageStateOf(payload)}
+	applyEffect(&out, payload)
+	return nil, out, payload
+}
+
+// applyEffect 取出 Node 侧动作后的变化摘要。
+func applyEffect(out *pageOutput, payload map[string]any) {
+	out.Navigated, _ = payload["navigated"].(bool)
+	if changed, ok := payload["changed"].(bool); ok {
+		out.Changed = &changed
+	}
+	out.Busy, _ = payload["busy"].(bool)
+	if tabs, ok := payload["newTabs"].([]any); ok {
+		out.NewTabs = decodeStrings(tabs)
+	}
+	out.Snapshot, _ = payload["snapshot"].(string)
 }
 
 // ---------------------------------------------------------------------------
@@ -113,9 +131,21 @@ type targetInput struct {
 // elementInput 是需要定位元素的工具共享的参数。
 type elementInput struct {
 	targetInput
-	Element       string `json:"element" jsonschema:"元素选择器，支持 CSS 以及 text= / role= 等 Playwright 选择器；建议直接用 ant_page_snapshot 返回的 selector"`
-	FrameSelector string `json:"frameSelector,omitempty" jsonschema:"元素在 iframe 内时，指向该 iframe 的选择器"`
-	Index         *int   `json:"index,omitempty" jsonschema:"选择器命中多个元素时取第几个，从 0 开始；省略取第一个"`
+	Element       string `json:"element" jsonschema:"快照编号如 e12，或 CSS / text= / role= 选择器"`
+	FrameSelector string `json:"frameSelector,omitempty" jsonschema:"CSS 选择器指向 iframe 内元素时，该 iframe 的选择器；快照编号不需要"`
+	Index         *int   `json:"index,omitempty" jsonschema:"选择器命中多个元素时取第几个，从 0 开始"`
+}
+
+// settleInput 是改页面的动作共享的参数。
+type settleInput struct {
+	Snapshot bool `json:"snapshot,omitempty" jsonschema:"动作后附带新快照，省一次 ant_page_snapshot"`
+}
+
+func (in settleInput) apply(args map[string]any) map[string]any {
+	if in.Snapshot {
+		args["snapshot"] = true
+	}
+	return args
 }
 
 func (in elementInput) args(extra map[string]any) map[string]any {
@@ -134,6 +164,7 @@ func (in elementInput) args(extra map[string]any) map[string]any {
 
 type gotoInput struct {
 	targetInput
+	settleInput
 	URL       string `json:"url" jsonschema:"要打开的完整 URL"`
 	WaitUntil string `json:"waitUntil,omitempty" jsonschema:"等待时机：domcontentloaded（默认）/ load / networkidle / commit"`
 }
@@ -145,28 +176,9 @@ type gotoOutput struct {
 
 type snapshotInput struct {
 	targetInput
-	Limit       int  `json:"limit,omitempty" jsonschema:"最多返回多少个可交互元素，默认 200，上限 500"`
-	IncludeText bool `json:"includeText,omitempty" jsonschema:"是否附带页面正文文本，默认否"`
-}
-
-// PageElement 是快照里的一个可交互元素。
-type PageElement struct {
-	Role     string `json:"role"`
-	Tag      string `json:"tag,omitempty"`
-	Name     string `json:"name,omitempty" jsonschema:"元素的可读名称：aria-label、placeholder 或可见文本"`
-	Selector string `json:"selector" jsonschema:"可直接回传给 ant_page_click / ant_page_fill 的选择器"`
-	Type     string `json:"type,omitempty"`
-	Value    string `json:"value,omitempty"`
-	Href     string `json:"href,omitempty"`
-	Checked  *bool  `json:"checked,omitempty"`
-	Disabled bool   `json:"disabled,omitempty"`
-}
-
-type snapshotOutput struct {
-	pageOutput
-	Elements  []PageElement `json:"elements"`
-	Text      string        `json:"text,omitempty"`
-	Truncated bool          `json:"truncated,omitempty" jsonschema:"元素数量达到上限被截断"`
+	Query       string `json:"query,omitempty" jsonschema:"只留含这些词的行，不分大小写；空格表示且，| 表示或，如 \"submit|login\""`
+	Limit       int    `json:"limit,omitempty" jsonschema:"最多列出多少个元素，默认 200，上限 1000；超出部分只报数量"`
+	IncludeText bool   `json:"includeText,omitempty" jsonschema:"附带页面正文（也按 query 过滤），默认否"`
 }
 
 type screenshotInput struct {
@@ -179,6 +191,7 @@ type screenshotInput struct {
 
 type clickInput struct {
 	elementInput
+	settleInput
 	Button     string `json:"button,omitempty" jsonschema:"鼠标键：left（默认）/ right / middle"`
 	ClickCount int    `json:"clickCount,omitempty" jsonschema:"点击次数，默认 1"`
 	Force      bool   `json:"force,omitempty" jsonschema:"跳过可点击性检查，默认否"`
@@ -186,31 +199,34 @@ type clickInput struct {
 
 // FillField 是一个待填字段。
 type FillField struct {
-	Element       string `json:"element" jsonschema:"输入框选择器"`
+	Element       string `json:"element" jsonschema:"快照编号如 e12，或 CSS / text= / role= 选择器"`
 	Value         string `json:"value" jsonschema:"要填入的值"`
-	FrameSelector string `json:"frameSelector,omitempty" jsonschema:"字段在 iframe 内时指向该 iframe 的选择器"`
+	FrameSelector string `json:"frameSelector,omitempty" jsonschema:"CSS 选择器指向 iframe 内元素时，该 iframe 的选择器"`
 }
 
 type fillInput struct {
 	targetInput
+	settleInput
 	Fields []FillField `json:"fields" jsonschema:"要填写的字段列表；一次传多个可以在一轮里填完整张表单"`
 }
 
 type fillOutput struct {
 	pageOutput
-	Filled []string `json:"filled" jsonschema:"实际填写的选择器列表"`
+	Filled []string `json:"filled" jsonschema:"实际填写的元素"`
 }
 
 type pressInput struct {
 	targetInput
+	settleInput
 	Key           string `json:"key" jsonschema:"按键名，例如 Enter、Escape、Tab、Control+A"`
-	Element       string `json:"element,omitempty" jsonschema:"先聚焦到该元素再按键；省略则作用于当前焦点"`
+	Element       string `json:"element,omitempty" jsonschema:"先聚焦到该元素再按键（快照编号或选择器）；省略则作用于当前焦点"`
 	FrameSelector string `json:"frameSelector,omitempty"`
 }
 
 type selectInput struct {
 	elementInput
-	Values []string `json:"values" jsonschema:"要选中的选项值；单选传一个元素的数组"`
+	settleInput
+	Values []string `json:"values" jsonschema:"要选中的选项，value 或可见文字均可；单选传一个元素的数组"`
 }
 
 type selectOutput struct {
@@ -218,9 +234,20 @@ type selectOutput struct {
 	Selected []string `json:"selected" jsonschema:"实际选中的选项值"`
 }
 
+type hoverInput struct {
+	elementInput
+	settleInput
+}
+
+type checkInput struct {
+	elementInput
+	settleInput
+	Checked *bool `json:"checked,omitempty" jsonschema:"true 勾选（默认），false 取消勾选"`
+}
+
 type waitInput struct {
 	targetInput
-	Element   string `json:"element,omitempty" jsonschema:"等待该元素达到目标状态"`
+	Element   string `json:"element,omitempty" jsonschema:"等待该元素达到目标状态（快照编号或选择器）"`
 	State     string `json:"state,omitempty" jsonschema:"元素目标状态：visible（默认）/ hidden / attached / detached"`
 	URL       string `json:"url,omitempty" jsonschema:"等待 URL 匹配该值，支持 glob 通配"`
 	LoadState string `json:"loadState,omitempty" jsonschema:"等待加载态：load / domcontentloaded / networkidle"`

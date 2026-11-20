@@ -142,21 +142,45 @@ mcp:
 | 工具 | 说明 |
 | --- | --- |
 | `ant_page_goto` | 导航到 URL，自动启动实例并接管 CDP |
-| `ant_page_snapshot` | 页面快照：URL、标题和全部可交互元素及其选择器 |
+| `ant_page_snapshot` | 页面快照：每个可交互元素一行，带会话内编号 |
 | `ant_page_screenshot` | 截图，以图像内容返回给客户端 |
 | `ant_page_click` | 点击元素 |
 | `ant_page_fill` | 填写输入框，支持一次传多个字段 |
 | `ant_page_press` | 发送键盘按键 |
 | `ant_page_select` | 选择下拉框选项 |
+| `ant_page_hover` | 鼠标悬停 |
+| `ant_page_check` | 勾选或取消勾选 |
 | `ant_page_wait` | 等待元素状态、URL 变化或加载完成 |
 | `ant_page_extract` | 抽取元素的文本、HTML 或属性 |
 | `ant_page_evaluate` | 在页面上下文里执行 JavaScript |
 | `ant_page_tabs` | 列出、新建、切换、关闭标签页 |
 | `ant_page_release` | 释放常驻页面会话 |
 
-推荐用 `ant_page_snapshot` 而不是 `ant_page_screenshot` 来决定下一步：
-它只返回能点能填的元素，比截图省上下文，而且给出的 `selector` 可以直接回传给
-`ant_page_click` / `ant_page_fill`，不需要自己猜 CSS。
+推荐用 `ant_page_snapshot` 而不是 `ant_page_screenshot` 来决定下一步。快照是纯文本：
+
+```
+url: https://example.com/login
+title: Sign in
+e1 textbox "Email" type=email
+e2 textbox "Password" type=password
+e3 checkbox "Remember me" [checked]
+e4 button "Sign in"
+(37 more not shown; narrow with query or raise limit)
+```
+
+- 编号（`e4`）可直接作为 `element` 传给 click / fill / press / select / hover / check /
+  extract / wait；CSS、`text=`、`role=` 选择器照常可用
+- 编号在会话内有效，同一元素再次快照沿用原编号；页面跳转或元素被移除后报
+  `ref not found: e4 (...)`，需重新快照。元素被框架重新渲染时，若它的角色和名字
+  在快照里唯一、现在仍唯一，会自动改绑到新元素
+- `query` 按关键词过滤（空格表示且，`|` 表示或），`limit` 控制行数，超出部分只报数量
+- 覆盖 iframe 和开放的 shadow DOM；`cursor: pointer` 的 div 也会列出（角色为 `clickable`）
+
+改页面的动作（goto / click / fill / press / select / hover / check）返回前会等页面稳定：
+主框架导航完成、动作期间发出的 xhr/fetch 返回、DOM 静默 200ms，最多等约 3 秒，
+超时不算失败。返回里带 `navigated`（是否跳转）、`changed`（DOM 是否变动）、
+`busy`（到上限仍在变化）、`newTabs`（新开的标签页）；传 `snapshot: true`
+会附上动作后的快照，省一次往返。
 
 `ant_page_evaluate` 会在页面里执行任意 JavaScript。它没有突破既有权限边界
 （MCP 只监听 localhost 且受 API Key 保护，`ant_script_run` 早已能跑任意 Node 代码），
@@ -213,7 +237,8 @@ mcp:
 
 1. `ant_page_goto` 打开目标页面（会自动启动实例并接管 CDP）
 2. `ant_page_snapshot` 看清页面上有什么可交互元素
-3. 用快照给出的 `selector` 调 `ant_page_click` / `ant_page_fill` 等工具
+3. 用快照里的编号（如 `e4`）调 `ant_page_click` / `ant_page_fill` 等工具，
+   需要看结果时加 `snapshot: true`
 4. 需要读数据时用 `ant_page_extract`，需要看版式时用 `ant_page_screenshot`
 5. 操作完调 `ant_page_release` 释放会话（不释放的话空闲一段时间后也会自动回收）
 

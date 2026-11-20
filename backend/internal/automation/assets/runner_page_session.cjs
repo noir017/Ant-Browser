@@ -3,6 +3,8 @@ const path = require('path');
 const readline = require('readline');
 const { normalizeTimeout, normalizePathUnderRoot, toSerializable } = require('./runner_shared.cjs');
 const { createBrowserGateway } = require('./runner_browser.cjs');
+const { parseRef, createRefStore, compactText } = require('./runner_page_refs.cjs');
+const { settleAfter } = require('./runner_page_settle.cjs');
 
 // 常驻页面会话。
 //
@@ -17,142 +19,30 @@ const { createBrowserGateway } = require('./runner_browser.cjs');
 //   - 截图等大产物写盘，响应里只带路径，避免撑爆管道缓冲
 
 const DEFAULT_TIMEOUT_MS = 30000;
-const DEFAULT_SNAPSHOT_LIMIT = 200;
 const ALLOWED_LOAD_STATES = new Set(['load', 'domcontentloaded', 'networkidle']);
 const ALLOWED_WAIT_UNTIL = new Set(['load', 'domcontentloaded', 'networkidle', 'commit']);
 const ALLOWED_ELEMENT_STATES = new Set(['visible', 'hidden', 'attached', 'detached']);
 
+// 这些动作执行后先等页面稳定再返回，并附带变化摘要。
+const SETTLE_ACTIONS = new Set([
+  'goto',
+  'back',
+  'forward',
+  'reload',
+  'click',
+  'dblclick',
+  'hover',
+  'fill',
+  'type',
+  'press',
+  'selectOption',
+  'check',
+  'uncheck',
+  'scroll',
+]);
+
 function isPlainObject(value) {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
-}
-
-// 页面内执行：采集可交互元素。
-//
-// 刻意不回传整棵 DOM——那对模型既贵又没用。只给「能点能填的东西」，
-// 每项附一个可直接回传给 click/fill 的 selector，形成闭环。
-function collectInteractiveElements(options) {
-  const limit = options && options.limit ? options.limit : 200;
-  const INTERACTIVE = 'a,button,input,select,textarea,summary,[role=button],[role=link],[role=checkbox],[role=radio],[role=tab],[role=menuitem],[contenteditable=""],[contenteditable=true],[onclick]';
-
-  const cssEscape = (value) => {
-    if (window.CSS && typeof window.CSS.escape === 'function') {
-      return window.CSS.escape(value);
-    }
-    return String(value).replace(/[^a-zA-Z0-9_-]/g, (ch) => `\\${ch}`);
-  };
-
-  const isVisible = (el) => {
-    const rect = el.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) {
-      return false;
-    }
-    const style = window.getComputedStyle(el);
-    return style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0';
-  };
-
-  // 选择器优先级：id > name > data-testid > 结构化 nth-of-type 路径。
-  // 前三者稳定且短，最后是兜底，保证任何元素都有可回传的定位方式。
-  const buildSelector = (el) => {
-    if (el.id) {
-      const byID = `#${cssEscape(el.id)}`;
-      if (document.querySelectorAll(byID).length === 1) {
-        return byID;
-      }
-    }
-    for (const attr of ['data-testid', 'data-test-id', 'name', 'aria-label']) {
-      const value = el.getAttribute(attr);
-      if (value) {
-        const candidate = `${el.tagName.toLowerCase()}[${attr}="${value.replace(/"/g, '\\"')}"]`;
-        try {
-          if (document.querySelectorAll(candidate).length === 1) {
-            return candidate;
-          }
-        } catch {
-          /* 属性值里可能有非法字符，忽略这个候选 */
-        }
-      }
-    }
-
-    const parts = [];
-    let node = el;
-    while (node && node.nodeType === 1 && parts.length < 6) {
-      const tag = node.tagName.toLowerCase();
-      if (tag === 'html' || tag === 'body') {
-        break;
-      }
-      const parent = node.parentElement;
-      if (!parent) {
-        parts.unshift(tag);
-        break;
-      }
-      const siblings = Array.from(parent.children).filter((child) => child.tagName === node.tagName);
-      parts.unshift(siblings.length > 1 ? `${tag}:nth-of-type(${siblings.indexOf(node) + 1})` : tag);
-      if (node.id) {
-        parts.unshift(`#${cssEscape(node.id)}`);
-        break;
-      }
-      node = parent;
-    }
-    return parts.join(' > ');
-  };
-
-  const accessibleName = (el) => {
-    const candidates = [
-      el.getAttribute('aria-label'),
-      el.getAttribute('placeholder'),
-      el.getAttribute('title'),
-      el.tagName === 'IMG' ? el.getAttribute('alt') : '',
-      el.tagName === 'INPUT' && el.type === 'submit' ? el.value : '',
-      (el.innerText || el.textContent || '').trim().slice(0, 120),
-      el.getAttribute('name'),
-    ];
-    for (const candidate of candidates) {
-      const text = String(candidate || '').replace(/\s+/g, ' ').trim();
-      if (text) {
-        return text;
-      }
-    }
-    return '';
-  };
-
-  const results = [];
-  const seen = new Set();
-  for (const el of document.querySelectorAll(INTERACTIVE)) {
-    if (results.length >= limit) {
-      break;
-    }
-    if (seen.has(el) || !isVisible(el)) {
-      continue;
-    }
-    seen.add(el);
-
-    const tag = el.tagName.toLowerCase();
-    const entry = {
-      role: el.getAttribute('role') || (tag === 'a' ? 'link' : tag === 'button' ? 'button' : tag),
-      tag,
-      name: accessibleName(el),
-      selector: buildSelector(el),
-    };
-    if (tag === 'input' || tag === 'textarea' || tag === 'select') {
-      entry.type = el.getAttribute('type') || tag;
-      entry.value = typeof el.value === 'string' ? el.value.slice(0, 200) : '';
-      if (el.disabled) entry.disabled = true;
-      if (typeof el.checked === 'boolean' && (entry.type === 'checkbox' || entry.type === 'radio')) {
-        entry.checked = el.checked;
-      }
-    }
-    if (tag === 'a' && el.href) {
-      entry.href = String(el.href).slice(0, 500);
-    }
-    results.push(entry);
-  }
-
-  return {
-    url: location.href,
-    title: document.title,
-    elements: results,
-    truncated: results.length >= limit,
-  };
 }
 
 async function runPageSession(payload, chromium) {
@@ -209,11 +99,19 @@ async function runPageSession(payload, chromium) {
     return { url: page.url(), title };
   };
 
+  const refs = createRefStore();
+
+  // 返回 Locator，或快照编号对应的 ElementHandle。两者在用到的动作上方法同名，
+  // 差异（type / waitFor / extract all）在各动作里单独处理。
   const locatorFor = async (args) => {
     const page = await activePage();
     const selector = String((args && args.selector) || '').trim();
     if (!selector) {
       throw new Error('selector is required');
+    }
+    const ref = parseRef(selector);
+    if (ref) {
+      return refs.resolve(ref);
     }
     let scope = page;
     const frame = String((args && args.frameSelector) || '').trim();
@@ -308,10 +206,13 @@ async function runPageSession(payload, chromium) {
       const locator = await locatorFor(args);
       const timeout = timeoutOf(args);
       await locator.click({ timeout });
-      await locator.pressSequentially(String((args && args.text) || ''), {
-        delay: Number((args && args.delayMs) || 0) || undefined,
-        timeout,
-      });
+      const text = String((args && args.text) || '');
+      const options = { delay: Number((args && args.delayMs) || 0) || undefined, timeout };
+      if (typeof locator.pressSequentially === 'function') {
+        await locator.pressSequentially(text, options);
+      } else {
+        await locator.type(text, options);
+      }
       return describePage(await activePage());
     },
 
@@ -374,8 +275,25 @@ async function runPageSession(payload, chromium) {
       if (selector) {
         const requested = String((args && args.state) || 'visible').trim();
         const elementState = ALLOWED_ELEMENT_STATES.has(requested) ? requested : 'visible';
-        const locator = await locatorFor({ ...args, timeoutMs: timeout });
-        await locator.waitFor({ state: elementState, timeout });
+        const gone = elementState === 'hidden' || elementState === 'detached';
+        let locator;
+        try {
+          locator = await locatorFor({ ...args, timeoutMs: timeout });
+        } catch (error) {
+          // 编号失效说明元素已经不在了，等「消失」正好算达成。
+          if (gone && parseRef(selector) && /^ref not found:/.test(error.message)) {
+            return describePage(page);
+          }
+          throw error;
+        }
+        if (typeof locator.waitFor === 'function') {
+          await locator.waitFor({ state: elementState, timeout });
+        } else if (elementState === 'detached') {
+          const frame = (await locator.ownerFrame()) || page.mainFrame();
+          await frame.waitForFunction((el) => !el.isConnected, locator, { timeout });
+        } else if (elementState !== 'attached') {
+          await locator.waitForElementState(elementState, { timeout });
+        }
       } else if (url) {
         await page.waitForURL(url, { timeout });
       } else if (loadState) {
@@ -388,17 +306,13 @@ async function runPageSession(payload, chromium) {
 
     snapshot: async (args) => {
       const page = await activePage();
-      const limit = Number((args && args.limit) || DEFAULT_SNAPSHOT_LIMIT);
-      const snapshot = await page.evaluate(collectInteractiveElements, {
-        limit: Number.isFinite(limit) && limit > 0 ? Math.min(limit, 500) : DEFAULT_SNAPSHOT_LIMIT,
-      });
+      const snap = await refs.snapshot(page, { limit: args && args.limit, query: args && args.query });
+      let text = snap.text;
       if (args && args.includeText === true) {
-        snapshot.text = String(await page.innerText('body').catch(() => '')).slice(
-          0,
-          Number((args && args.textLimit) || 5000)
-        );
+        const body = await page.innerText('body', { timeout: 5000 }).catch(() => '');
+        text += `\n-- text\n${compactText(body, { query: args.query, textLimit: args.textLimit })}`;
       }
-      return snapshot;
+      return { ...(await describePage(page)), snapshot: text, shown: snap.shown, total: snap.total };
     },
 
     extract: async (args) => {
@@ -421,6 +335,10 @@ async function runPageSession(payload, chromium) {
 
       if (!all) {
         return { mode, value: await readOne(locator) };
+      }
+      if (typeof locator.count !== 'function') {
+        // 快照编号只指向一个元素。
+        return { mode, count: 1, values: [await readOne(locator)] };
       }
 
       // all 模式要重新取整组 locator：locatorFor 已经收敛到 first()/nth()。
@@ -525,6 +443,21 @@ async function runPageSession(payload, chromium) {
     },
   };
 
+  // 改页面的动作：等稳定后用最新的 url/title 覆盖，并合入变化摘要；
+  // args.snapshot=true 时顺带附上动作后的快照，省一次往返。
+  const runAction = async (action, handler, args) => {
+    if (!SETTLE_ACTIONS.has(action)) {
+      return handler(args);
+    }
+    const page = await activePage();
+    const { value, effect } = await settleAfter(page, () => handler(args));
+    const result = { ...(isPlainObject(value) ? value : {}), ...effect, ...(await describePage(page)) };
+    if (args.snapshot === true && !page.isClosed()) {
+      result.snapshot = (await refs.snapshot(page, {})).text;
+    }
+    return result;
+  };
+
   let shuttingDown = false;
   const shutdown = async (reason, code) => {
     if (shuttingDown) {
@@ -587,10 +520,12 @@ async function runPageSession(payload, chromium) {
     }
 
     try {
-      const result = await handler(isPlainObject(command.args) ? command.args : {});
+      const result = await runAction(action, handler, isPlainObject(command.args) ? command.args : {});
       await emit({ id, ok: true, result: toSerializable(result) });
     } catch (error) {
       await emit({ id, ok: false, error: error && error.message ? error.message : String(error) });
+    } finally {
+      await refs.release();
     }
   };
 
@@ -610,5 +545,4 @@ async function runPageSession(payload, chromium) {
 
 module.exports = {
   runPageSession,
-  collectInteractiveElements,
 };

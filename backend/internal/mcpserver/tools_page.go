@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"ant-chrome/backend/internal/launchcode"
@@ -19,11 +20,12 @@ func registerPageTools(srv *mcp.Server, p PageProvider) {
 func registerPageNavigationTools(srv *mcp.Server, p PageProvider) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "ant_page_goto",
-		Description: "在目标实例里导航到指定 URL。首次调用会自动启动实例并接管 CDP，" +
-			"之后的页面操作复用同一个会话，无需重复启动。",
+		Description: "打开 URL。首次调用会自动启动实例并接管 CDP，之后复用同一会话。" +
+			"改页面的动作（goto/click/fill/press/select/hover/check）都会等页面稳定后再返回，" +
+			"并报告是否跳转（navigated）、DOM 是否变化（changed）。",
 		Annotations: mutating("页面导航"),
 	}, func(_ context.Context, _ *mcp.CallToolRequest, in gotoInput) (*mcp.CallToolResult, gotoOutput, error) {
-		args := map[string]any{"url": strings.TrimSpace(in.URL)}
+		args := in.apply(map[string]any{"url": strings.TrimSpace(in.URL)})
 		if waitUntil := strings.TrimSpace(in.WaitUntil); waitUntil != "" {
 			args["waitUntil"] = waitUntil
 		}
@@ -42,7 +44,7 @@ func registerPageNavigationTools(srv *mcp.Server, p PageProvider) {
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "ant_page_wait",
-		Description: "等待页面达到某个状态：元素出现或消失、URL 变化、加载完成。都不指定时按 timeoutMs 单纯等待。",
+		Description: "等元素出现或消失、URL 变化或加载完成；都不指定时按 timeoutMs 单纯等待。",
 		Annotations: readOnly("等待页面状态"),
 	}, func(_ context.Context, _ *mcp.CallToolRequest, in waitInput) (*mcp.CallToolResult, pageOutput, error) {
 		args := map[string]any{}
@@ -107,9 +109,8 @@ func registerPageNavigationTools(srv *mcp.Server, p PageProvider) {
 
 func registerPageInteractionTools(srv *mcp.Server, p PageProvider) {
 	mcp.AddTool(srv, &mcp.Tool{
-		Name: "ant_page_click",
-		Description: "点击页面元素。element 建议直接用 ant_page_snapshot 返回的 selector，" +
-			"那是从真实 DOM 算出来的，比自己猜 CSS 可靠。",
+		Name:        "ant_page_click",
+		Description: "点击元素。element 优先用 ant_page_snapshot 给的编号（如 e12）。",
 		Annotations: mutating("点击元素"),
 	}, func(_ context.Context, _ *mcp.CallToolRequest, in clickInput) (*mcp.CallToolResult, pageOutput, error) {
 		extra := map[string]any{}
@@ -123,7 +124,7 @@ func registerPageInteractionTools(srv *mcp.Server, p PageProvider) {
 			extra["force"] = true
 		}
 
-		fail, out, _ := runPageAction(p, in.Selector, in.TimeoutMs, "click", in.args(extra))
+		fail, out, _ := runPageAction(p, in.Selector, in.TimeoutMs, "click", in.apply(in.args(extra)))
 		if fail != nil {
 			return fail, out, nil
 		}
@@ -131,9 +132,8 @@ func registerPageInteractionTools(srv *mcp.Server, p PageProvider) {
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
-		Name: "ant_page_fill",
-		Description: "填写输入框。一次可以传多个字段，整张表单在一轮里填完，比逐个字段调用快得多。" +
-			"会先清空原有内容再填入。",
+		Name:        "ant_page_fill",
+		Description: "填写输入框，先清空再填。一次可传多个字段，整张表单一轮填完。",
 		Annotations: mutating("填写表单"),
 	}, func(_ context.Context, _ *mcp.CallToolRequest, in fillInput) (*mcp.CallToolResult, fillOutput, error) {
 		if len(in.Fields) == 0 {
@@ -153,7 +153,7 @@ func registerPageInteractionTools(srv *mcp.Server, p PageProvider) {
 			fields = append(fields, entry)
 		}
 
-		fail, out, payload := runPageAction(p, in.Selector, in.TimeoutMs, "fill", map[string]any{"fields": fields})
+		fail, out, payload := runPageAction(p, in.Selector, in.TimeoutMs, "fill", in.apply(map[string]any{"fields": fields}))
 		if fail != nil {
 			return fail, fillOutput{pageOutput: out}, nil
 		}
@@ -167,7 +167,7 @@ func registerPageInteractionTools(srv *mcp.Server, p PageProvider) {
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "ant_page_press",
-		Description: "发送键盘按键，例如提交表单的 Enter、关闭弹层的 Escape。可先聚焦到指定元素再按。",
+		Description: "按键，如提交表单的 Enter、关闭弹层的 Escape。可先聚焦到指定元素再按。",
 		Annotations: mutating("键盘输入"),
 	}, func(_ context.Context, _ *mcp.CallToolRequest, in pressInput) (*mcp.CallToolResult, pageOutput, error) {
 		key := strings.TrimSpace(in.Key)
@@ -175,7 +175,7 @@ func registerPageInteractionTools(srv *mcp.Server, p PageProvider) {
 			return toolError(newInputError("key 不能为空")), pageOutput{}, nil
 		}
 
-		args := map[string]any{"key": key}
+		args := in.apply(map[string]any{"key": key})
 		if element := strings.TrimSpace(in.Element); element != "" {
 			args["selector"] = element
 			if frame := strings.TrimSpace(in.FrameSelector); frame != "" {
@@ -192,7 +192,7 @@ func registerPageInteractionTools(srv *mcp.Server, p PageProvider) {
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "ant_page_select",
-		Description: "在下拉框（select 元素）里选中选项。values 传选项的 value 属性值。",
+		Description: "在 select 下拉框里选中选项。",
 		Annotations: mutating("选择下拉项"),
 	}, func(_ context.Context, _ *mcp.CallToolRequest, in selectInput) (*mcp.CallToolResult, selectOutput, error) {
 		if len(in.Values) == 0 {
@@ -204,7 +204,7 @@ func registerPageInteractionTools(srv *mcp.Server, p PageProvider) {
 			values = append(values, value)
 		}
 
-		fail, out, payload := runPageAction(p, in.Selector, in.TimeoutMs, "selectOption", in.args(map[string]any{"values": values}))
+		fail, out, payload := runPageAction(p, in.Selector, in.TimeoutMs, "selectOption", in.apply(in.args(map[string]any{"values": values})))
 		if fail != nil {
 			return fail, selectOutput{pageOutput: out}, nil
 		}
@@ -215,17 +215,47 @@ func registerPageInteractionTools(srv *mcp.Server, p PageProvider) {
 		}
 		return nil, result, nil
 	})
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "ant_page_hover",
+		Description: "鼠标悬停在元素上，用于展开悬停菜单、提示。",
+		Annotations: mutating("悬停元素"),
+	}, func(_ context.Context, _ *mcp.CallToolRequest, in hoverInput) (*mcp.CallToolResult, pageOutput, error) {
+		fail, out, _ := runPageAction(p, in.Selector, in.TimeoutMs, "hover", in.apply(in.args(nil)))
+		if fail != nil {
+			return fail, out, nil
+		}
+		return nil, out, nil
+	})
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "ant_page_check",
+		Description: "勾选或取消勾选复选框、单选框；已是目标状态时不动。",
+		Annotations: mutating("勾选元素"),
+	}, func(_ context.Context, _ *mcp.CallToolRequest, in checkInput) (*mcp.CallToolResult, pageOutput, error) {
+		action := "check"
+		if in.Checked != nil && !*in.Checked {
+			action = "uncheck"
+		}
+		fail, out, _ := runPageAction(p, in.Selector, in.TimeoutMs, action, in.apply(in.args(nil)))
+		if fail != nil {
+			return fail, out, nil
+		}
+		return nil, out, nil
+	})
 }
 
 func registerPageReadTools(srv *mcp.Server, p PageProvider) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "ant_page_snapshot",
-		Description: "获取页面快照：当前 URL、标题，以及所有可交互元素及其选择器。" +
-			"这是决定下一步操作的首选工具——它只返回能点能填的元素，比截图省上下文，" +
-			"给出的 selector 可以直接回传给 ant_page_click / ant_page_fill。",
+		Description: "列出页面上可交互的元素，每行一个，如 `e12 button \"提交\"`。编号可直接作 element 传给其他页面工具；" +
+			"页面跳转或元素被移除后编号失效，需重新快照。用 query 过滤能省上下文。",
 		Annotations: readOnly("页面快照"),
-	}, func(_ context.Context, _ *mcp.CallToolRequest, in snapshotInput) (*mcp.CallToolResult, snapshotOutput, error) {
+	}, func(_ context.Context, _ *mcp.CallToolRequest, in snapshotInput) (*mcp.CallToolResult, any, error) {
 		args := map[string]any{}
+		if query := strings.TrimSpace(in.Query); query != "" {
+			args["query"] = query
+		}
 		if in.Limit > 0 {
 			args["limit"] = in.Limit
 		}
@@ -233,22 +263,13 @@ func registerPageReadTools(srv *mcp.Server, p PageProvider) {
 			args["includeText"] = true
 		}
 
-		fail, out, payload := runPageAction(p, in.Selector, in.TimeoutMs, "snapshot", args)
+		fail, out, _ := runPageAction(p, in.Selector, in.TimeoutMs, "snapshot", args)
 		if fail != nil {
-			return fail, snapshotOutput{pageOutput: out}, nil
+			return fail, nil, nil
 		}
-
-		result := snapshotOutput{pageOutput: out, Elements: []PageElement{}}
-		if elements, ok := payload["elements"].([]any); ok {
-			result.Elements = decodeElements(elements)
-		}
-		if text, ok := payload["text"].(string); ok {
-			result.Text = text
-		}
-		if truncated, ok := payload["truncated"].(bool); ok {
-			result.Truncated = truncated
-		}
-		return nil, result, nil
+		// 纯文本返回：同样的内容塞进 JSON 会多出大量转义。
+		text := fmt.Sprintf("url: %s\ntitle: %s\n%s", out.Page.URL, out.Page.Title, out.Snapshot)
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}, nil, nil
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -399,24 +420,8 @@ func registerPageSessionTools(srv *mcp.Server, p PageProvider) {
 // 解码辅助
 //
 // Node 侧回传的是 map[string]any，这里做一次窄化。用 json 往返而不是逐字段
-// 断言，是因为元素字段较多且可选，手写断言又长又容易漏。
+// 断言，是因为字段多且可选，手写断言又长又容易漏。
 // ---------------------------------------------------------------------------
-
-func decodeElements(items []any) []PageElement {
-	out := make([]PageElement, 0, len(items))
-	for _, item := range items {
-		data, err := json.Marshal(item)
-		if err != nil {
-			continue
-		}
-		var element PageElement
-		if err := json.Unmarshal(data, &element); err != nil {
-			continue
-		}
-		out = append(out, element)
-	}
-	return out
-}
 
 func decodeTabs(items []any) []PageTab {
 	out := make([]PageTab, 0, len(items))

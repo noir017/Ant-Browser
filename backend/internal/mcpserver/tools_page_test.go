@@ -101,13 +101,47 @@ func TestPageToolsTranslateToActions(t *testing.T) {
 		},
 		{
 			tool:       "ant_page_snapshot",
-			args:       map[string]any{"limit": float64(50), "includeText": true},
+			args:       map[string]any{"limit": float64(50), "includeText": true, "query": "login|submit"},
 			wantAction: "snapshot",
 			check: func(t *testing.T, args map[string]any) {
-				if args["limit"] != 50 || args["includeText"] != true {
+				if args["limit"] != 50 || args["includeText"] != true || args["query"] != "login|submit" {
 					t.Errorf("args = %v", args)
 				}
 			},
+		},
+		{
+			tool:       "ant_page_click",
+			args:       map[string]any{"element": "e12", "snapshot": true},
+			wantAction: "click",
+			check: func(t *testing.T, args map[string]any) {
+				// 快照编号与选择器走同一个字段，由 Node 侧识别。
+				if args["selector"] != "e12" || args["snapshot"] != true {
+					t.Errorf("args = %v", args)
+				}
+			},
+		},
+		{
+			tool:       "ant_page_hover",
+			args:       map[string]any{"element": "e3"},
+			wantAction: "hover",
+			check: func(t *testing.T, args map[string]any) {
+				if args["selector"] != "e3" {
+					t.Errorf("args = %v", args)
+				}
+				if _, ok := args["snapshot"]; ok {
+					t.Errorf("snapshot should be absent, got %v", args["snapshot"])
+				}
+			},
+		},
+		{
+			tool:       "ant_page_check",
+			args:       map[string]any{"element": "e4"},
+			wantAction: "check",
+		},
+		{
+			tool:       "ant_page_check",
+			args:       map[string]any{"element": "e4", "checked": false},
+			wantAction: "uncheck",
 		},
 		{
 			tool:       "ant_page_extract",
@@ -249,8 +283,8 @@ func TestPageFillRejectsEmptyFields(t *testing.T) {
 	}
 }
 
-// 快照是模型的「眼睛」，元素列表必须被解码成结构化输出而不是塞回原始 map。
-func TestPageSnapshotDecodesElements(t *testing.T) {
+// 快照以纯文本返回：编号行塞进 JSON 会多出大量转义，也不该再附一份结构化输出。
+func TestPageSnapshotReturnsText(t *testing.T) {
 	provider := &fakeProvider{
 		pageResult: &launchcode.PageResult{
 			ProfileID: "p1",
@@ -259,13 +293,9 @@ func TestPageSnapshotDecodesElements(t *testing.T) {
 				Action: "snapshot",
 				OK:     true,
 				Result: map[string]any{
-					"url":   "https://example.com/",
-					"title": "Example",
-					"elements": []any{
-						map[string]any{"role": "button", "tag": "button", "name": "登录", "selector": "#login"},
-						map[string]any{"role": "textbox", "tag": "input", "name": "用户名", "selector": "#user", "type": "text"},
-					},
-					"truncated": true,
+					"url":      "https://example.com/",
+					"title":    "Example",
+					"snapshot": "e1 button \"登录\"\ne2 textbox \"用户名\"",
 				},
 			}},
 		},
@@ -275,20 +305,98 @@ func TestPageSnapshotDecodesElements(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("snapshot failed: %v", result.Content)
 	}
+	if result.StructuredContent != nil {
+		t.Errorf("structured content = %v, want none", result.StructuredContent)
+	}
+	want := "url: https://example.com/\ntitle: Example\ne1 button \"登录\"\ne2 textbox \"用户名\""
+	if got := renderContent(result); got != want {
+		t.Errorf("text = %q, want %q", got, want)
+	}
+}
 
-	var out snapshotOutput
+// 动作后的变化摘要和附带快照要透出到输出里，模型据此判断要不要再看页面。
+func TestPageActionReportsEffect(t *testing.T) {
+	provider := &fakeProvider{
+		pageResult: &launchcode.PageResult{
+			ProfileID: "p1",
+			OK:        true,
+			Steps: []launchcode.PageStepOutcome{{
+				Action: "click",
+				OK:     true,
+				Result: map[string]any{
+					"url":       "https://example.com/next",
+					"title":     "Next",
+					"navigated": true,
+					"changed":   true,
+					"busy":      true,
+					"newTabs":   []any{"https://example.com/popup"},
+					"snapshot":  "e5 link \"Home\"",
+				},
+			}},
+		},
+	}
+
+	result := callPageTool(t, provider, "ant_page_click", map[string]any{"element": "e1", "snapshot": true})
+	if result.IsError {
+		t.Fatalf("click failed: %v", result.Content)
+	}
+
+	var out pageOutput
 	decodeStructured(t, result, &out)
-	if out.Page.Title != "Example" || out.Page.URL != "https://example.com/" {
-		t.Errorf("page = %+v", out.Page)
+	if out.Page.URL != "https://example.com/next" || !out.Navigated || !out.Busy {
+		t.Errorf("out = %+v", out)
 	}
-	if len(out.Elements) != 2 {
-		t.Fatalf("elements = %d, want 2", len(out.Elements))
+	if out.Changed == nil || !*out.Changed {
+		t.Errorf("changed = %v, want true", out.Changed)
 	}
-	if out.Elements[0].Selector != "#login" || out.Elements[0].Name != "登录" {
-		t.Errorf("first element = %+v", out.Elements[0])
+	if len(out.NewTabs) != 1 || out.Snapshot != "e5 link \"Home\"" {
+		t.Errorf("newTabs = %v, snapshot = %q", out.NewTabs, out.Snapshot)
 	}
-	if !out.Truncated {
-		t.Error("truncated = false, want true")
+}
+
+// 「点了没反应」也是信息：changed=false 必须显式出现，而不是被 omitempty 吞掉。
+func TestPageActionKeepsUnchangedFlag(t *testing.T) {
+	provider := &fakeProvider{
+		pageResult: &launchcode.PageResult{
+			ProfileID: "p1",
+			OK:        true,
+			Steps: []launchcode.PageStepOutcome{{
+				Action: "click",
+				OK:     true,
+				Result: map[string]any{"url": "https://example.com/", "navigated": false, "changed": false},
+			}},
+		},
+	}
+
+	result := callPageTool(t, provider, "ant_page_click", map[string]any{"element": "e1"})
+	if result.IsError {
+		t.Fatalf("click failed: %v", result.Content)
+	}
+	if text := renderContent(result); !strings.Contains(text, `"changed":false`) {
+		t.Errorf("output = %s, want an explicit changed:false", text)
+	}
+}
+
+// 编号失效的报错要原样透出，前缀供报错归一化识别。
+func TestPageStaleRefErrorPassesThrough(t *testing.T) {
+	provider := &fakeProvider{
+		pageResult: &launchcode.PageResult{
+			ProfileID: "p1",
+			OK:        false,
+			Steps: []launchcode.PageStepOutcome{{
+				Action: "click",
+				OK:     false,
+				Error:  "ref not found: e12 (page navigated or reloaded; take a new snapshot)",
+			}},
+		},
+	}
+
+	result := callPageTool(t, provider, "ant_page_click", map[string]any{"element": "e12"})
+	if !result.IsError {
+		t.Fatal("stale ref click reported success")
+	}
+	if !strings.HasPrefix(renderContent(result), "ref not found: e12") {
+		t.Errorf("error text = %q", renderContent(result))
 	}
 }
 

@@ -309,7 +309,7 @@ func TestToolsAreRegistered(t *testing.T) {
 		"ant_core_list",
 		"ant_page_goto", "ant_page_wait", "ant_page_tabs",
 		"ant_page_click", "ant_page_fill", "ant_page_press", "ant_page_select",
-		"ant_page_snapshot", "ant_page_screenshot", "ant_page_extract",
+		"ant_page_hover", "ant_page_check", "ant_page_snapshot", "ant_page_screenshot", "ant_page_extract",
 		"ant_page_evaluate", "ant_page_release",
 	}
 	for _, name := range want {
