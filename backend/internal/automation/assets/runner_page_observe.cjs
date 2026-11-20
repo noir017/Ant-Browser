@@ -74,6 +74,9 @@ const FORM_PAIR = /^[^=&\s]+=/;
 
 function keyWords(key) {
   return String(key == null ? '' : key)
+    // 先拆缩写边界（APIKey → API_Key、CSRFToken → CSRF_Token），
+    // 再拆普通驼峰（accessToken → access_Token）。
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
     .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
     .toLowerCase()
     .split(/[^a-z0-9]+/)
