@@ -117,6 +117,11 @@ func classifyPageError(raw string) string {
 		return "session_lost"
 	case strings.Contains(lower, "intercepts pointer events"):
 		return "element_obstructed"
+	case strings.Contains(lower, "element is not visible"),
+		strings.Contains(lower, "element is not enabled"),
+		strings.Contains(lower, "element is not stable"),
+		strings.Contains(lower, "element is not editable"):
+		return "element_not_actionable"
 	case strings.Contains(lower, "not attached to the dom"),
 		strings.Contains(lower, "element was detached"),
 		strings.Contains(lower, "execution context was destroyed"):
@@ -130,9 +135,9 @@ func classifyPageError(raw string) string {
 		return "navigation_failed"
 	case strings.Contains(lower, "waiting for locator"),
 		strings.Contains(lower, "waiting for selector"),
-		strings.Contains(lower, "waiting for element"),
-		strings.Contains(lower, "no element found"),
-		strings.Contains(lower, "element not found"):
+		strings.Contains(lower, "waiting for element"):
+		return "locator_timeout"
+	case (strings.Contains(lower, "no element found") || strings.Contains(lower, "element not found")) && pageTimedOut(lower):
 		return "locator_timeout"
 	case strings.Contains(lower, "timeout") && (strings.Contains(lower, "exceeded") || strings.Contains(lower, "timed out")):
 		return "timeout"
@@ -141,10 +146,16 @@ func classifyPageError(raw string) string {
 	}
 }
 
+// pageTimedOut 判断错误里是否带超时语义。
+func pageTimedOut(lower string) bool {
+	return strings.Contains(lower, "timeout") || strings.Contains(lower, "timed out")
+}
+
 // pageFailureHints 是每个类别对应的下一步动作。写给模型看，动词开头。
 var pageFailureHints = map[string]string{
 	"ref_stale":              "元素编号已过期；重新调用 ant_page_snapshot 取最新编号或 selector 再操作",
 	"locator_timeout":        "重新调用 ant_page_snapshot 确认元素是否存在；改用 text= 或 role= 定位，不要重复同一个 CSS",
+	"element_not_actionable": "元素已找到但当前不可交互（禁用、不可见或不稳定）；等待状态变化或改用 snapshot 里可操作的元素后再试",
 	"element_obstructed":     "元素被浮层或其他元素遮挡；先关闭弹窗/遮罩，或用 ant_page_snapshot 重新确认可点目标",
 	"element_detached":       "页面已重新渲染，旧元素已脱离 DOM；重新 snapshot 后使用新的 selector",
 	"navigation_interrupted": "导航被新的跳转或页面关闭打断；等页面稳定后重试，必要时重新 goto",
@@ -158,7 +169,6 @@ var pageFailureHints = map[string]string{
 // pageFailureRetryable 表示原样重试是否可能成功。
 // 需要先换 selector 或重新观察页面的失败不在此列，避免模型原地打转。
 var pageFailureRetryable = map[string]bool{
-	"locator_timeout":        true,
 	"navigation_interrupted": true,
 	"navigation_failed":      true,
 	"session_timeout":        true,

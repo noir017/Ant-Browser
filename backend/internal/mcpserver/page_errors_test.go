@@ -28,7 +28,15 @@ func TestPageFailureClassification(t *testing.T) {
 			wantCode:  "locator_timeout",
 			wantInMsg: "locator.click: Timeout 30000ms exceeded.",
 			wantHint:  "ant_page_snapshot",
-			retryable: true,
+			retryable: false,
+		},
+		{
+			name:      "element not actionable",
+			raw:       "locator.click: Timeout 1500ms exceeded.\nCall log:\n\x1b[2m  - waiting for locator('#save')\x1b[22m\n\x1b[2m    - element is not enabled\x1b[22m\n\x1b[2m    - retrying click action\x1b[22m",
+			wantCode:  "element_not_actionable",
+			wantInMsg: "locator.click: Timeout 1500ms exceeded.",
+			wantHint:  "不可交互",
+			retryable: false,
 		},
 		{
 			name:      "element obstructed",
@@ -61,6 +69,30 @@ func TestPageFailureClassification(t *testing.T) {
 			wantInMsg: "net::ERR_NAME_NOT_RESOLVED",
 			wantHint:  "网络连通性",
 			retryable: true,
+		},
+		{
+			name:      "generic timeout",
+			raw:       "page.waitForLoadState: Timeout 30000ms exceeded.",
+			wantCode:  "timeout",
+			wantInMsg: "page.waitForLoadState: Timeout 30000ms exceeded.",
+			wantHint:  "timeoutMs",
+			retryable: true,
+		},
+		{
+			name:      "element not found with timeout",
+			raw:       "locator.click: Timeout 30000ms exceeded.\nCall log:\n  - element not found",
+			wantCode:  "locator_timeout",
+			wantInMsg: "locator.click: Timeout 30000ms exceeded.",
+			wantHint:  "ant_page_snapshot",
+			retryable: false,
+		},
+		{
+			name:      "element not found without timeout",
+			raw:       "Error: element not found",
+			wantCode:  "page_error",
+			wantInMsg: "Error: element not found",
+			wantHint:  "ant_page_snapshot",
+			retryable: false,
 		},
 		{
 			name:      "session timeout",
@@ -179,7 +211,7 @@ func TestPageToolFailureIsNormalized(t *testing.T) {
 	}
 
 	text := contentText(result)
-	for _, want := range []string{"locator_timeout: locator.click: Timeout 30000ms exceeded.", "hint: ", "retryable: true"} {
+	for _, want := range []string{"locator_timeout: locator.click: Timeout 30000ms exceeded.", "hint: ", "retryable: false"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("tool error = %q, want it to contain %q", text, want)
 		}
