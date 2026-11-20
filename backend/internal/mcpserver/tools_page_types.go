@@ -49,7 +49,11 @@ func pageCall(p PageProvider, selector *Selector, timeoutMs int, action string, 
 	if selector != nil {
 		req.Selector = selector.toLaunchSelector()
 	}
-	return p.RunPageSteps(req)
+	result, err := p.RunPageSteps(req)
+	if err != nil {
+		return nil, asPageFailure(err)
+	}
+	return result, nil
 }
 
 // firstStep 取出单步调用的结果。
@@ -58,14 +62,14 @@ func pageCall(p PageProvider, selector *Selector, timeoutMs int, action string, 
 // 都是「这一步没成」，但错误文案来源不同，这里统一成一个 error。
 func firstStep(result *launchcode.PageResult) (map[string]any, error) {
 	if result == nil {
-		return nil, &launchcode.ServiceError{Status: 500, Message: "页面操作没有返回结果"}
+		return nil, newPageFailure("页面操作没有返回结果")
 	}
 	if len(result.Steps) == 0 {
 		message := strings.TrimSpace(result.Error)
 		if message == "" {
 			message = "页面操作没有返回结果"
 		}
-		return nil, &launchcode.ServiceError{Status: 500, Message: message}
+		return nil, newPageFailure(message)
 	}
 
 	step := result.Steps[0]
@@ -74,7 +78,7 @@ func firstStep(result *launchcode.PageResult) (map[string]any, error) {
 		if message == "" {
 			message = "页面操作失败"
 		}
-		return step.Result, &launchcode.ServiceError{Status: 500, Message: message}
+		return step.Result, newPageFailure(message)
 	}
 	return step.Result, nil
 }

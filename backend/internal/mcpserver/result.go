@@ -34,6 +34,13 @@ func describeError(err error) string {
 		return "unknown error"
 	}
 
+	// 页面工具的失败已经归一化成 code / message / hint / retryable，
+	// 这里直接输出，不再套「请先……」的通用建议。
+	var pageErr *pageFailure
+	if errors.As(err, &pageErr) {
+		return pageErr.text()
+	}
+
 	var svcErr *launchcode.ServiceError
 	if !errors.As(err, &svcErr) {
 		return err.Error()
