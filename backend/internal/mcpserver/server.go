@@ -120,4 +120,4 @@ func ToolCount() int {
 }
 
 // toolCount 是当前注册的工具总数。新增或删除工具时必须同步更新。
-const toolCount = 32
+const toolCount = 34

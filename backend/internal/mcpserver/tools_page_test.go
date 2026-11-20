@@ -377,8 +377,8 @@ func TestPageActionKeepsUnchangedFlag(t *testing.T) {
 	}
 }
 
-// 编号失效的报错要原样透出，前缀供报错归一化识别。
-func TestPageStaleRefErrorPassesThrough(t *testing.T) {
+// 编号失效的报错经归一化后归为 ref_stale，原始消息保留。
+func TestPageStaleRefErrorIsRefStale(t *testing.T) {
 	provider := &fakeProvider{
 		pageResult: &launchcode.PageResult{
 			ProfileID: "p1",
@@ -395,8 +395,9 @@ func TestPageStaleRefErrorPassesThrough(t *testing.T) {
 	if !result.IsError {
 		t.Fatal("stale ref click reported success")
 	}
-	if !strings.HasPrefix(renderContent(result), "ref not found: e12") {
-		t.Errorf("error text = %q", renderContent(result))
+	text := renderContent(result)
+	if !strings.HasPrefix(text, "ref_stale: ref not found: e12") || !strings.Contains(text, "retryable: false") {
+		t.Errorf("error text = %q", text)
 	}
 }
 

@@ -154,6 +154,8 @@ mcp:
 | `ant_page_extract` | 抽取元素的文本、HTML 或属性 |
 | `ant_page_evaluate` | 在页面上下文里执行 JavaScript |
 | `ant_page_tabs` | 列出、新建、切换、关闭标签页 |
+| `ant_page_network` | 最近的网络请求，可按类型 / URL / 状态码过滤，按 id 取详情 |
+| `ant_page_console` | 最近的控制台消息和页面异常，可按级别过滤 |
 | `ant_page_release` | 释放常驻页面会话 |
 
 推荐用 `ant_page_snapshot` 而不是 `ant_page_screenshot` 来决定下一步。快照是纯文本：
