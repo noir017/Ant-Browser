@@ -16,6 +16,9 @@ var runnerBrowserScriptContent []byte
 //go:embed assets/runner_page_session.cjs
 var runnerPageSessionScriptContent []byte
 
+//go:embed assets/runner_page_observe.cjs
+var runnerPageObserveScriptContent []byte
+
 //go:embed assets/runner_page_api.cjs
 var runnerPageAPIScriptContent []byte
 
@@ -27,6 +30,7 @@ var runnerAssetFiles = map[string][]byte{
 	"runner_shared.cjs":        runnerSharedScriptContent,
 	"runner_browser.cjs":       runnerBrowserScriptContent,
 	"runner_page_session.cjs":  runnerPageSessionScriptContent,
+	"runner_page_observe.cjs":  runnerPageObserveScriptContent,
 	"runner_page_api.cjs":      runnerPageAPIScriptContent,
 	"runner_script_loader.cjs": runnerScriptLoaderContent,
 }

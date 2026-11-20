@@ -311,6 +311,7 @@ func TestToolsAreRegistered(t *testing.T) {
 		"ant_page_click", "ant_page_fill", "ant_page_press", "ant_page_select",
 		"ant_page_snapshot", "ant_page_screenshot", "ant_page_extract",
 		"ant_page_evaluate", "ant_page_release",
+		"ant_page_network", "ant_page_console",
 	}
 	for _, name := range want {
 		if !got[name] {
@@ -344,6 +345,7 @@ func TestReadOnlyToolsAnnotated(t *testing.T) {
 		// 页面读取类：只观察页面，不改变它的状态。
 		"ant_page_snapshot": true, "ant_page_screenshot": true,
 		"ant_page_extract": true, "ant_page_wait": true,
+		"ant_page_network": true, "ant_page_console": true,
 	}
 	destructiveTools := map[string]bool{
 		"ant_instance_delete": true, "ant_instance_stop": true,

@@ -3,6 +3,7 @@ const path = require('path');
 const readline = require('readline');
 const { normalizeTimeout, normalizePathUnderRoot, toSerializable } = require('./runner_shared.cjs');
 const { createBrowserGateway } = require('./runner_browser.cjs');
+const { createPageObserver } = require('./runner_page_observe.cjs');
 
 // 常驻页面会话。
 //
@@ -182,6 +183,9 @@ async function runPageSession(payload, chromium) {
   const session = await gateway.launch({});
   const connection = await gateway.connect(session, { timeoutMs: payload.connectTimeoutMs });
   const { browser, context } = await gateway.resolveConnectionContext(connection);
+
+  // 观测器从会话建立时就挂上，之后新开的标签页也会自动纳入采集。
+  const observer = createPageObserver(context);
 
   const state = { page: connection.page || null };
 
@@ -523,6 +527,10 @@ async function runPageSession(payload, chromium) {
 
       throw new Error(`unsupported tabs op: ${op}`);
     },
+
+    network: async (args) => observer.network(args),
+
+    console: async (args) => observer.console(args),
   };
 
   let shuttingDown = false;

@@ -14,6 +14,7 @@ func registerPageTools(srv *mcp.Server, p PageProvider) {
 	registerPageInteractionTools(srv, p)
 	registerPageReadTools(srv, p)
 	registerPageSessionTools(srv, p)
+	registerPageObserveTools(srv, p)
 }
 
 func registerPageNavigationTools(srv *mcp.Server, p PageProvider) {
