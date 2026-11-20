@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -154,6 +155,14 @@ func TestPageNetworkDecodesDetail(t *testing.T) {
 	}
 	if !strings.Contains(out.Detail.RequestBody, `"password":"***"`) {
 		t.Errorf("request body = %q, want the password masked", out.Detail.RequestBody)
+	}
+	// 详情没有计数语义，返回 total: 0 会让人以为缓冲区是空的。
+	raw, err := json.Marshal(result.StructuredContent)
+	if err != nil {
+		t.Fatalf("marshal structured content: %v", err)
+	}
+	if strings.Contains(string(raw), `"total"`) {
+		t.Errorf("detail output = %s, want no total field", raw)
 	}
 }
 

@@ -4,8 +4,8 @@
 // 若干条记录。agent 想查「刚才那次点击为什么没成」时直接读这两个动作，
 // 不必再手写 fetch 钩子、翻 performance 或者自己重发一遍请求。
 //
-// 采集全在 Node 侧完成，Go 只负责翻译参数、解码结果。请求头、请求体和 URL
-// 查询串里的凭据一律打码后再回传，避免 token 顺着工具输出流进上下文。
+// 采集全在 Node 侧完成，Go 只负责翻译参数、解码结果。请求头、请求体、响应头
+// 和 URL 查询串里的凭据一律打码后再回传，避免 token 顺着工具输出流进上下文。
 
 const NETWORK_BUFFER_LIMIT = 100;
 const CONSOLE_BUFFER_LIMIT = 100;
@@ -17,8 +17,44 @@ const LIST_URL_LIMIT = 300;
 const LIST_TEXT_LIMIT = 400;
 const BODY_PREVIEW_LIMIT = 1000;
 
-// 命中这些字样的键一律打码：cookie、鉴权头、各类 token 和口令。
-const SENSITIVE_KEY = /(authorization|cookie|token|password|passwd|pwd|secret|api[-_]?key|session[-_]?id|csrf|xsrf)/i;
+// 敏感键按「词」判断，不做子串匹配，避免 auth 命中 author 这类误伤。
+// 键先按分隔符和驼峰拆词，再看整词或相邻词对。
+const SENSITIVE_WORDS = new Set([
+  'auth',
+  'authorization',
+  'authentication',
+  'bearer',
+  'cookie',
+  'cookies',
+  'credential',
+  'credentials',
+  'csrf',
+  'jwt',
+  'pass',
+  'passwd',
+  'password',
+  'pwd',
+  'secret',
+  'secrets',
+  'sessionid',
+  'signature',
+  'ticket',
+  'tickets',
+  'token',
+  'tokens',
+  'xsrf',
+]);
+
+const SENSITIVE_PAIRS = new Set([
+  'access key',
+  'api key',
+  'client secret',
+  'private key',
+  'secret key',
+  'secret token',
+  'session id',
+  'session key',
+]);
 
 const BINARY_CONTENT_TYPE = /^(image|audio|video|font)\/|^application\/(octet-stream|zip|pdf|wasm)/i;
 
@@ -34,10 +70,39 @@ const LEVEL_ALIASES = {
   err: 'error',
 };
 
-const FORM_BODY = /^[^=&\s]+=[^&\s]*(&[^=&\s]+=[^&\s]*)*$/;
+const FORM_PAIR = /^[^=&\s]+=/;
+
+function keyWords(key) {
+  return String(key == null ? '' : key)
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+}
 
 function isSensitiveKey(key) {
-  return SENSITIVE_KEY.test(String(key == null ? '' : key));
+  const words = keyWords(key);
+  for (const word of words) {
+    if (SENSITIVE_WORDS.has(word)) {
+      return true;
+    }
+  }
+  for (let index = 0; index + 1 < words.length; index += 1) {
+    if (SENSITIVE_PAIRS.has(`${words[index]} ${words[index + 1]}`)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function headerValue(headers, name) {
+  const target = String(name).toLowerCase();
+  for (const [key, value] of Object.entries(headers || {})) {
+    if (String(key).toLowerCase() === target) {
+      return String(value == null ? '' : value);
+    }
+  }
+  return '';
 }
 
 function truncate(value, limit) {
@@ -48,7 +113,14 @@ function truncate(value, limit) {
 function maskHeaders(headers) {
   const result = {};
   for (const [key, value] of Object.entries(headers || {})) {
-    result[key] = isSensitiveKey(key) ? '***' : String(value);
+    if (isSensitiveKey(key)) {
+      result[key] = '***';
+    } else if (/^location$/i.test(key)) {
+      // 重定向目标常带一次性 ticket，按 URL 规则打码。
+      result[key] = maskURL(value);
+    } else {
+      result[key] = String(value);
+    }
   }
   return result;
 }
@@ -76,6 +148,20 @@ function decodeKey(raw) {
   }
 }
 
+function maskFormBody(text) {
+  return text
+    .split('&')
+    .map((pair) => {
+      const index = pair.indexOf('=');
+      if (index <= 0) {
+        return pair;
+      }
+      const key = pair.slice(0, index);
+      return isSensitiveKey(decodeKey(key)) ? `${key}=***` : pair;
+    })
+    .join('&');
+}
+
 // maskBody 打码请求体 / 响应体：JSON 按键递归，表单按参数名，其余原样返回。
 function maskBody(text, contentType) {
   const raw = String(text == null ? '' : text);
@@ -92,25 +178,17 @@ function maskBody(text, contentType) {
     }
   }
 
-  const looksLikeForm = /x-www-form-urlencoded/i.test(String(contentType || '')) || FORM_BODY.test(trimmed);
-  if (looksLikeForm) {
-    return trimmed
-      .split('&')
-      .map((pair) => {
-        const index = pair.indexOf('=');
-        if (index <= 0) {
-          return pair;
-        }
-        const key = pair.slice(0, index);
-        return isSensitiveKey(decodeKey(key)) ? `${key}=***` : pair;
-      })
-      .join('&');
+  // 表单只要求「每段都是 k=v」，值里带未编码空格也照常识别。
+  const looksLikeForm = trimmed.split('&').every((pair) => FORM_PAIR.test(pair));
+  if (looksLikeForm || /x-www-form-urlencoded/i.test(String(contentType || ''))) {
+    return maskFormBody(trimmed);
   }
 
   return raw;
 }
 
 // maskURL 只打码查询串里的敏感参数，路径和主机保持不变。
+// 相对地址（例如重定向的 Location）无法用 URL 解析，按同样的规则手工处理。
 function maskURL(raw) {
   const text = String(raw == null ? '' : raw);
   try {
@@ -124,8 +202,29 @@ function maskURL(raw) {
     }
     return masked ? parsed.toString() : text;
   } catch {
+    /* 相对地址，走下面的手工分支 */
+  }
+
+  const queryStart = text.indexOf('?');
+  if (queryStart < 0) {
     return text;
   }
+  const head = text.slice(0, queryStart);
+  const rest = text.slice(queryStart + 1);
+  const hashStart = rest.indexOf('#');
+  const query = hashStart >= 0 ? rest.slice(0, hashStart) : rest;
+  const hash = hashStart >= 0 ? rest.slice(hashStart) : '';
+  const maskedQuery = query
+    .split('&')
+    .map((pair) => {
+      const index = pair.indexOf('=');
+      if (index <= 0) {
+        return pair;
+      }
+      return isSensitiveKey(decodeKey(pair.slice(0, index))) ? `${pair.slice(0, index)}=***` : pair;
+    })
+    .join('&');
+  return maskedQuery === query ? text : `${head}?${maskedQuery}${hash}`;
 }
 
 function normalizeLimit(value) {
@@ -210,11 +309,13 @@ function safeText(value) {
 
 // createPageObserver 挂上监听并返回两个查询入口。
 //
-// 记录按会话维度收集（不区分标签页），每条都带 pageUrl，多个标签页时也能分清。
+// 记录按会话维度收集（不区分标签页），每条都带 pageId 和 pageUrl：pageId 只用来
+// 在页面关闭时清理引用，pageUrl 让多个标签页的记录能分清。
 function createPageObserver(context) {
   const network = [];
   const messages = [];
   const inflight = new WeakMap();
+  let nextPageID = 1;
   let nextNetworkID = 1;
   let nextMessageID = 1;
 
@@ -260,7 +361,30 @@ function createPageObserver(context) {
     }
   };
 
+  // releasePage 在页面关闭时清掉记录里的 Playwright 对象。
+  //
+  // 记录本身保留（刚关掉的标签页往往正是要查的），但 request / response 会
+  // 拖住已关闭页面的上下文，必须断开；没结束的请求也不会再触发 requestfailed，
+  // 这里一并标成已结束，免得永远挂在 pending。
+  const releasePage = (pageID) => {
+    for (const record of network) {
+      if (record.pageID !== pageID) {
+        continue;
+      }
+      if (record.pending) {
+        record.pending = false;
+        record.durationMs = Math.max(0, Date.now() - record.startedMs);
+        record.failed = record.failed || '页面已关闭';
+      }
+      record.request = null;
+      record.response = null;
+    }
+  };
+
   const attach = (page) => {
+    const pageID = nextPageID;
+    nextPageID += 1;
+
     page.on('request', (request) => {
       let postData = '';
       try {
@@ -268,9 +392,17 @@ function createPageObserver(context) {
       } catch {
         postData = '';
       }
+      let headers = {};
+      try {
+        // 列表阶段只取同步头，避免每个静态资源都多一次 CDP 往返。
+        headers = request.headers() || {};
+      } catch {
+        headers = {};
+      }
 
       const record = {
         id: 0,
+        pageID,
         method: safeText(request.method()),
         url: safeText(request.url()),
         resourceType: safeText(request.resourceType()),
@@ -282,9 +414,10 @@ function createPageObserver(context) {
         pending: true,
         failed: '',
         pageUrl: pageURLOf(page, request),
-        headersPromise: request.allHeaders().catch(() => request.headers()),
+        headers,
         postData,
         responseHeaders: null,
+        request,
         response: null,
       };
       inflight.set(request, record);
@@ -350,6 +483,8 @@ function createPageObserver(context) {
         pageUrl: pageURLOf(page),
       });
     });
+
+    page.on('close', () => releasePage(pageID));
   };
 
   for (const page of context.pages()) {
@@ -365,7 +500,7 @@ function createPageObserver(context) {
       status: record.status,
       resourceType: record.resourceType,
       durationMs: record.durationMs,
-      pageUrl: truncate(record.pageUrl, LIST_URL_LIMIT),
+      pageUrl: truncate(maskURL(record.pageUrl), LIST_URL_LIMIT),
     };
     if (record.pending) {
       item.pending = true;
@@ -377,15 +512,18 @@ function createPageObserver(context) {
   };
 
   const detailOf = async (record) => {
-    let headers = record.responseHeaders;
-    let requestHeaders = {};
-    try {
-      requestHeaders = maskHeaders((await record.headersPromise) || {});
-    } catch {
-      requestHeaders = {};
+    let requestHeaders = record.headers || {};
+    if (record.request) {
+      // 详情才取全部头（含 Cookie），列表阶段不做这次 CDP 查询。
+      try {
+        requestHeaders = (await record.request.allHeaders()) || requestHeaders;
+      } catch {
+        /* 请求已随页面销毁，退回同步头 */
+      }
     }
 
-    const contentType = String((headers && (headers['content-type'] || headers['Content-Type'])) || '');
+    const requestContentType = headerValue(requestHeaders, 'content-type');
+    const responseContentType = headerValue(record.responseHeaders, 'content-type');
     const detail = {
       id: record.id,
       method: record.method,
@@ -396,23 +534,26 @@ function createPageObserver(context) {
       durationMs: record.durationMs,
       pending: record.pending,
       failed: record.failed,
-      pageUrl: record.pageUrl,
+      pageUrl: maskURL(record.pageUrl),
       startedAt: record.startedAt,
-      requestHeaders,
-      requestBody: truncate(maskBody(record.postData, requestHeaders['content-type']), BODY_PREVIEW_LIMIT),
-      responseHeaders: maskHeaders(headers || {}),
+      requestHeaders: maskHeaders(requestHeaders),
+      requestBody: truncate(maskBody(record.postData, requestContentType), BODY_PREVIEW_LIMIT),
+      responseHeaders: maskHeaders(record.responseHeaders || {}),
     };
 
     if (!record.response) {
       return detail;
     }
-    if (BINARY_CONTENT_TYPE.test(contentType)) {
-      detail.responseBody = `[${contentType || 'binary'} 内容未读取]`;
+    if (BINARY_CONTENT_TYPE.test(responseContentType)) {
+      detail.responseBody = `[${responseContentType || 'binary'} 内容未读取]`;
       return detail;
     }
     try {
-      detail.responseBody = truncate(maskBody(await record.response.text(), contentType), BODY_PREVIEW_LIMIT);
-      detail.responseType = contentType;
+      detail.responseBody = truncate(
+        maskBody(await record.response.text(), responseContentType),
+        BODY_PREVIEW_LIMIT
+      );
+      detail.responseType = responseContentType;
     } catch (error) {
       detail.responseBody = `[响应体不可读：${error && error.message ? error.message : String(error)}]`;
     }
@@ -443,7 +584,9 @@ function createPageObserver(context) {
       if (keyword && !record.url.toLowerCase().includes(keyword)) {
         return false;
       }
-      return !matchStatus || matchStatus(record.status);
+      // 没有响应（未结束或已失败）的记录没有状态码，不参与状态码过滤，
+      // 否则 0 会被 <300 这类条件误判为命中。
+      return !matchStatus || (record.status > 0 && matchStatus(record.status));
     });
 
     const items = matched.slice(-limit).map(summarize);
@@ -461,7 +604,7 @@ function createPageObserver(context) {
       type: record.type,
       text: truncate(record.text, LIST_TEXT_LIMIT),
       source: record.source,
-      pageUrl: truncate(record.pageUrl, LIST_URL_LIMIT),
+      pageUrl: truncate(maskURL(record.pageUrl), LIST_URL_LIMIT),
     }));
     return { total: messages.length, matched: matched.length, returned: items.length, items };
   };
@@ -474,6 +617,7 @@ function createPageObserver(context) {
 
 module.exports = {
   createPageObserver,
+  isSensitiveKey,
   maskHeaders,
   maskBody,
   maskURL,

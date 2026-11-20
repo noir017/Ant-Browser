@@ -149,7 +149,7 @@ type NetworkRequestDetail struct {
 
 type networkOutput struct {
 	pageOutput
-	Total    int                   `json:"total" jsonschema:"缓冲区里的请求总数"`
+	Total    int                   `json:"total,omitempty" jsonschema:"缓冲区里的请求总数；按 id 查详情时不返回"`
 	Matched  int                   `json:"matched,omitempty" jsonschema:"命中过滤条件的条数"`
 	Returned int                   `json:"returned,omitempty"`
 	Requests []NetworkRequest      `json:"requests,omitempty"`
